@@ -14,7 +14,8 @@ secrets all live in this folder. It is API-only: the frontend is a separate proj
 ```bash
 cd server
 npm install
-cp .env.example .env      # then fill in MONGODB_URI (use the development database)
+cp .env.example .env      # then fill in the values
+npm run seed              # creates roles, settings and the first CEO in the development database
 ```
 
 ## Commands (run inside `server/`)
@@ -25,7 +26,20 @@ cp .env.example .env      # then fill in MONGODB_URI (use the development databa
 | `npm start` | Starts the API once (production style) |
 | `npm run lint` | ESLint (including the "no classes" rule) and a Prettier check |
 | `npm run format` | Formats the code with Prettier |
-| `npm test` | Runs the tests (Vitest + Supertest) |
+| `npm test` | Runs the tests (Vitest + Supertest). Database tests use an in-memory MongoDB, never a real database |
+| `npm run seed` | Creates the three roles, the settings record and the first CEO user (`SEED_CEO_EMAIL`). Safe to run again |
+| `node tests/helpers/downloadTestDb.js` | Once per computer: downloads the in-memory MongoDB used by the tests (about 780 MB) |
+
+## Which database is used
+
+`MONGODB_URI` is production. `MONGODB_URI_DEV` is development. Every run that is not
+`NODE_ENV=production` uses the development one; the startup log line "Using database" says which.
+
+## Signing in
+
+There are no passwords. A person can sign in with Google only if an administrator has invited
+their email address (a row in `users`). The first CEO comes from the seed script.
+Flow: `/api/auth/google` → Google → `/api/auth/google/callback` → session cookie → `/api/auth/me`.
 
 ## How the code is organised
 

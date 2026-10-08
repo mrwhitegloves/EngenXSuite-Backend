@@ -38,6 +38,11 @@ export const FEATURES = [
   'audit',
 ];
 
+// Features where a user with TEAM scope also sees records that have no owner yet.
+// Leads: the CEO and Sales Managers assign unassigned leads, so managers must be able to see
+// them. Sales Agents (scope "assigned") never see an unassigned lead (decision 0008).
+export const TEAM_SEES_UNOWNED = ['opportunities'];
+
 /** Rank of a scope; higher means wider. Unknown scopes rank below everything. */
 export function scopeRank(scope) {
   return SCOPES.indexOf(scope);
@@ -53,7 +58,8 @@ const WORK = ['view', 'create', 'edit'];
 // these into the `roles` collection once; after that the CEO edits them in the permission screen.
 // Leads (opportunities), founder decision 0008: the CEO sees and edits every lead; a Sales Agent
 // sees and edits ONLY leads assigned to them (owner or in assignedUserIds), in lists, search and by
-// direct link; a Sales Manager sees the leads of their own team.
+// direct link; a Sales Manager sees the leads of their own team plus unassigned leads, which the
+// CEO and managers assign.
 export const DEFAULT_ROLE_GRANTS = {
   CEO: FEATURES.flatMap((feature) => all(feature, ACTIONS)),
 

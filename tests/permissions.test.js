@@ -153,10 +153,27 @@ describe('lead access: CEO all, Sales Agent only assigned leads', () => {
     }
   });
 
-  it('a Sales Manager sees the leads of their team but not unassigned or other teams', () => {
+  it('a Sales Manager sees team leads and unassigned leads, but not other teams', () => {
     expect(can(manager, 'view', { feature, record: leadOwnedByA })).toBe(true);
-    expect(can(manager, 'view', { feature, record: unassignedLead })).toBe(false);
+    expect(can(manager, 'view', { feature, record: unassignedLead })).toBe(true);
     expect(can(manager, 'view', { feature, record: leadOfOtherTeam })).toBe(false);
+  });
+
+  it('the CEO and Sales Managers can assign an unassigned lead; a Sales Agent cannot', () => {
+    expect(can(ceo, 'assign', { feature, record: unassignedLead })).toBe(true);
+    expect(can(manager, 'assign', { feature, record: unassignedLead })).toBe(true);
+    expect(can(agentA, 'assign', { feature, record: unassignedLead })).toBe(false);
+  });
+
+  it("a manager's list filter includes unassigned leads; an unowned task is not included", () => {
+    expect(scopeFilter(manager, feature)).toEqual({
+      $or: [
+        { ownerId: { $in: ['mgr', 'agentA', 'agentB'] } },
+        { assignedUserIds: 'mgr' },
+        { ownerId: null },
+      ],
+    });
+    expect(can(manager, 'edit', { feature: 'tasks', record: { ownerId: null } })).toBe(false);
   });
 
   it('the list and search filter for an agent matches only owned or assigned leads', () => {
