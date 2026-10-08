@@ -205,6 +205,32 @@ describe('auth endpoints', () => {
     expect((await agent.get('/api/auth/me')).status).toBe(401);
   });
 
+  it('PATCH /api/auth/me saves the theme and nothing else', async () => {
+    const { userId } = await signInWithGoogle(
+      { googleId: 'g-1', email: 'boss@engenx.in', emailVerified: true },
+      OPTIONS,
+    );
+    const agent = request.agent(makeApp());
+    await agent.get(`/__test/sign-in?userId=${userId}`);
+
+    const ok = await agent.patch('/api/auth/me').send({ theme: 'dark' });
+    expect(ok.status).toBe(200);
+    expect(ok.body.data.theme).toBe('dark');
+
+    // A user cannot change their own status or role through this endpoint.
+    const sneaky = await agent
+      .patch('/api/auth/me')
+      .send({ theme: 'light', status: 'deactivated' });
+    expect(sneaky.status).toBe(200);
+    expect((await User.findById(userId)).status).toBe('active');
+
+    expect((await agent.patch('/api/auth/me').send({ theme: 'pink' })).status).toBe(400);
+    expect((await agent.patch('/api/auth/me').send({})).status).toBe(400);
+    expect((await request(makeApp()).patch('/api/auth/me').send({ theme: 'dark' })).status).toBe(
+      401,
+    );
+  });
+
   it('POST /api/auth/logout ends the session', async () => {
     const { userId } = await signInWithGoogle(
       { googleId: 'g-1', email: 'boss@engenx.in', emailVerified: true },

@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 import { passport } from '../infra/googleAuth.js';
 import { SESSION_COOKIE_NAME } from '../middleware/session.js';
-import { toPublicUser } from '../services/auth.service.js';
+import { toPublicUser, updateMyPreferences } from '../services/auth.service.js';
 import { isAppError } from '../lib/errors.js';
 import { sendOk } from '../lib/respond.js';
 
@@ -34,6 +34,12 @@ export function finishGoogleSignIn(req, res, next) {
 // GET /api/auth/me: who is signed in, and what may they do.
 export function getCurrentUser(req, res) {
   sendOk(res, toPublicUser(req.user));
+}
+
+// PATCH /api/auth/me: the signed-in user changes their own preferences (theme).
+export async function updateCurrentUser(req, res) {
+  const user = await updateMyPreferences(req.user._id, req.validated.body);
+  sendOk(res, toPublicUser(user));
 }
 
 // POST /api/auth/logout: end the session on the server and clear the cookie.

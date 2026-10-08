@@ -77,6 +77,16 @@ export async function loadRequestUser(userId) {
   };
 }
 
+/**
+ * Save the signed-in user's own display preferences.
+ * @param {string} userId
+ * @param {{ theme?: 'light' | 'dark' | 'system' }} preferences  Already validated
+ */
+export async function updateMyPreferences(userId, preferences) {
+  await User.updateOne({ _id: userId }, { $set: preferences });
+  return loadRequestUser(userId);
+}
+
 /** The part of the request user that is safe and useful to send to the browser. */
 export function toPublicUser(user) {
   return {
