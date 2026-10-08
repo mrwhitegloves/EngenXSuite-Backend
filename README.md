@@ -28,6 +28,8 @@ npm run seed              # creates roles, settings and the first CEO in the dev
 | `npm run format` | Formats the code with Prettier |
 | `npm test` | Runs the tests (Vitest + Supertest). Database tests use an in-memory MongoDB, never a real database |
 | `npm run seed` | Creates the three roles, the settings record and the first CEO user (`SEED_CEO_EMAIL`). Safe to run again |
+| `npm run set-password -- someone@example.com` | Gives that user a temporary password, printed once in the terminal. For the first CEO account or a locked-out administrator |
+| `npm run seed -- --reset-role-grants` | Also overwrites the three built-in roles with the current default permissions. Discards changes made to them in the app |
 | `node tests/helpers/downloadTestDb.js` | Once per computer: downloads the in-memory MongoDB used by the tests (about 780 MB) |
 
 ## Which database is used
@@ -37,9 +39,15 @@ npm run seed              # creates roles, settings and the first CEO in the dev
 
 ## Signing in
 
-There are no passwords. A person can sign in with Google only if an administrator has invited
-their email address (a row in `users`). The first CEO comes from the seed script.
-Flow: `/api/auth/google` → Google → `/api/auth/google/callback` → session cookie → `/api/auth/me`.
+Two ways, both only for a user account that already exists (there is no sign-up):
+
+- Email + password: `POST /api/auth/login`. Accounts and first passwords are created on the Users
+  screen by the CEO or a Sales Manager. A password set by someone else must be replaced at the
+  first sign-in (`POST /api/auth/password`); until then every other route answers 403.
+- Google: `/api/auth/google` → Google → `/api/auth/google/callback`, for a user whose email matches.
+
+The first CEO comes from the seed script; give them a password with `npm run set-password`.
+Passwords are hashed with bcrypt in `infra/password.js` and never logged or returned.
 
 ## How the code is organised
 

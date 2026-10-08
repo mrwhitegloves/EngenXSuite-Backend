@@ -55,11 +55,20 @@ describe('getScope', () => {
 });
 
 describe('can() without a record (is the action allowed at all)', () => {
-  it('only the CEO manages users, settings, the audit log and the CEO dashboard', () => {
-    for (const feature of ['users', 'settings', 'audit', 'ceo_dashboard']) {
+  it('only the CEO reaches settings, the audit log and the CEO dashboard', () => {
+    for (const feature of ['settings', 'audit', 'ceo_dashboard']) {
       expect(can(ceo, 'view', { feature })).toBe(true);
       expect(can(manager, 'view', { feature })).toBe(false);
       expect(can(agentA, 'view', { feature })).toBe(false);
+    }
+  });
+
+  it('user accounts: CEO all, Sales Manager own team, Sales Agent none (decision 0009)', () => {
+    expect(getScope(ceo, 'users', 'create')).toBe('all');
+    expect(getScope(manager, 'users', 'create')).toBe('team');
+    expect(getScope(manager, 'users', 'delete')).toBeNull();
+    for (const action of ['view', 'create', 'edit']) {
+      expect(can(agentA, action, { feature: 'users' })).toBe(false);
     }
   });
 

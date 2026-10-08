@@ -1,9 +1,12 @@
 import { User } from '../models/user.model.js';
 import { Role } from '../models/role.model.js';
-import { forbidden } from '../lib/errors.js';
+import { badRequest, forbidden, unauthorized } from '../lib/errors.js';
+import { hashPassword, verifyPassword } from '../infra/password.js';
+import { revokeUserSessions } from '../lib/sessions.js';
+import { writeAudit } from '../lib/audit.js';
 
-// Sign-in rules. No passwords exist in this system: identity comes from Google, and access comes
-// from the invite list (the `users` collection).
+// Sign-in rules. Two ways in: email + password, and Google. Both work only for an account that
+// already exists in the `users` collection; there is no public sign-up (decision 0009).
 
 // One message for "not invited" and "deactivated", so the sign-in page never reveals which
 // email addresses exist in the CRM.
@@ -45,6 +48,59 @@ export async function signInWithGoogle(profile, { workspaceDomain }) {
   return { userId: String(user._id) };
 }
 
+// One message for a wrong password, an unknown email, a deactivated account and an account
+// without a password, so the sign-in page never reveals which emails exist.
+const WRONG_CREDENTIALS_MESSAGE = 'The email or password is not correct.';
+
+/**
+ * Email + password sign-in (decision 0009). Works only for accounts created in the CRM.
+ * @param {{ email: string, password: string }} credentials  Already validated
+ * @returns {Promise<{ userId: string }>}
+ */
+export async function signInWithPassword({ email, password }) {
+  const user = await User.findOne({ email }).select('+passwordHash status');
+  // verifyPassword always does a full bcrypt comparison, also when the user does not exist,
+  // so the response time is the same in both cases.
+  const passwordOk = await verifyPassword(password, user?.passwordHash);
+  if (!user || !passwordOk || user.status === 'deactivated') {
+    throw unauthorized(WRONG_CREDENTIALS_MESSAGE);
+  }
+
+  await User.updateOne({ _id: user._id }, { $set: { status: 'active', lastLoginAt: new Date() } });
+  return { userId: String(user._id) };
+}
+
+/**
+ * The signed-in user chooses a new password. Their other sessions are ended.
+ * @param {string} userId
+ * @param {{ currentPassword: string, newPassword: string }} input  Already validated
+ * @param {{ keepSessionId?: string }} [options]
+ */
+export async function changeMyPassword(userId, { currentPassword, newPassword }, options = {}) {
+  const user = await User.findById(userId).select('+passwordHash');
+  const currentOk = await verifyPassword(currentPassword, user?.passwordHash);
+  if (!user || !currentOk) throw badRequest('Your current password is not correct.');
+
+  await User.updateOne(
+    { _id: user._id },
+    {
+      $set: {
+        passwordHash: await hashPassword(newPassword),
+        mustChangePassword: false,
+        passwordChangedAt: new Date(),
+      },
+    },
+  );
+  await revokeUserSessions(user._id, { exceptSessionId: options.keepSessionId });
+  await writeAudit({
+    actor: { _id: user._id },
+    action: 'user.password_changed',
+    entityType: 'users',
+    entityId: user._id,
+  });
+  return loadRequestUser(user._id);
+}
+
 /**
  * Load the user for a request: the user, their role's grants, and the ids of the people who
  * report to them (needed for the TEAM permission scope). Returns null when the session's user
@@ -72,6 +128,7 @@ export async function loadRequestUser(userId) {
     theme: user.theme,
     isWorkspaceAccount: user.isWorkspaceAccount,
     notificationsEnabled: user.notificationsEnabled,
+    mustChangePassword: user.mustChangePassword === true,
     role: { _id: role._id, name: role.name, grants: role.grants },
     teamUserIds: reports.map((report) => report._id),
   };
@@ -97,6 +154,7 @@ export function toPublicUser(user) {
     theme: user.theme,
     isWorkspaceAccount: user.isWorkspaceAccount,
     notificationsEnabled: user.notificationsEnabled,
+    mustChangePassword: user.mustChangePassword,
     role: { id: String(user.role._id), name: user.role.name },
     // The client uses these only to hide what the user cannot do. The server still decides.
     grants: user.role.grants.map(({ feature, action, scope }) => ({ feature, action, scope })),

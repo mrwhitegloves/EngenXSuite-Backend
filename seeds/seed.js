@@ -14,12 +14,23 @@ const ROLE_DESCRIPTIONS = {
 };
 
 /**
- * @param {{ ceoEmail?: string, productName: string, companyName: string, workspaceDomain: string }} options
+ * @param {{ ceoEmail?: string, productName: string, companyName: string, workspaceDomain: string,
+ *           resetRoleGrants?: boolean }} options
+ *   resetRoleGrants: also overwrite the grants of the three built-in roles with the current
+ *   defaults. Only for a deliberate run after the defaults changed in code: it discards any
+ *   change an administrator made to those roles.
  * @returns {Promise<{ rolesCreated: string[], settingsCreated: boolean, ceoCreated: boolean }>}
  */
-export async function runSeed({ ceoEmail, productName, companyName, workspaceDomain }) {
+export async function runSeed({
+  ceoEmail,
+  productName,
+  companyName,
+  workspaceDomain,
+  resetRoleGrants = false,
+}) {
   const rolesCreated = [];
   for (const [name, grants] of Object.entries(DEFAULT_ROLE_GRANTS)) {
+    if (resetRoleGrants) await Role.updateOne({ name, isSystem: true }, { $set: { grants } });
     const result = await Role.updateOne(
       { name },
       // $setOnInsert: written only when the role does not exist yet.

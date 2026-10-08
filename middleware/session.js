@@ -24,6 +24,9 @@ export function createSessionMiddleware() {
     rolling: true,
     store: MongoStore.create({
       client: mongoose.connection.getClient(),
+      // Named explicitly so sessions always live in the same database as the rest of the data.
+      // lib/sessions.js deletes them through the Mongoose connection and must find them there.
+      dbName: mongoose.connection.name,
       collectionName: SESSION_COLLECTION,
       // Session data is stored as a readable object so all sessions of one user can be found
       // and removed when that user is deactivated.

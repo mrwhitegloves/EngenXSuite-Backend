@@ -81,6 +81,8 @@ export const DEFAULT_ROLE_GRANTS = {
     ...all('imports', ['view', 'create']),
     ...all('website', ['view']),
     ...all('chat', WORK),
+    // Decision 0009: managers create and manage the user accounts of their own team.
+    ...scoped('users', WORK, 'team'),
   ],
 
   'Sales Agent': [

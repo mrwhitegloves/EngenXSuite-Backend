@@ -15,6 +15,8 @@ async function main() {
       productName: env.APP_NAME,
       companyName: env.COMPANY_NAME,
       workspaceDomain: env.WORKSPACE_DOMAIN,
+      // npm run seed -- --reset-role-grants
+      resetRoleGrants: process.argv.includes('--reset-role-grants'),
     });
     logger.info(result, 'Seed finished');
   } finally {

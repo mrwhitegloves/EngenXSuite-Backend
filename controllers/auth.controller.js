@@ -1,9 +1,34 @@
 import { env } from '../config/env.js';
 import { passport } from '../infra/googleAuth.js';
 import { SESSION_COOKIE_NAME } from '../middleware/session.js';
-import { toPublicUser, updateMyPreferences } from '../services/auth.service.js';
+import {
+  changeMyPassword,
+  loadRequestUser,
+  signInWithPassword,
+  toPublicUser,
+  updateMyPreferences,
+} from '../services/auth.service.js';
 import { isAppError } from '../lib/errors.js';
 import { sendOk } from '../lib/respond.js';
+
+// Put the user into a brand-new session. A new session id after sign-in means an id an attacker
+// may have planted in the browser beforehand is useless.
+function startSession(req, userId) {
+  return new Promise((resolve, reject) => {
+    req.session.regenerate((regenerateError) => {
+      if (regenerateError) return reject(regenerateError);
+      req.session.userId = userId;
+      return req.session.save((saveError) => (saveError ? reject(saveError) : resolve()));
+    });
+  });
+}
+
+// POST /api/auth/login: email + password sign-in.
+export async function loginWithPassword(req, res) {
+  const { userId } = await signInWithPassword(req.validated.body);
+  await startSession(req, userId);
+  sendOk(res, toPublicUser(await loadRequestUser(userId)));
+}
 
 // GET /api/auth/google: send the browser to Google's sign-in page.
 export const startGoogleSignIn = passport.authenticate('google', { session: false });
@@ -18,16 +43,9 @@ export function finishGoogleSignIn(req, res, next) {
       if (reason === 'failed') req.log.warn({ err: error }, 'Google sign-in failed');
       return res.redirect(`${env.APP_URL}/?signin=${reason}`);
     }
-
-    // A new session id after sign-in, so an id an attacker may have planted before is useless.
-    return req.session.regenerate((sessionError) => {
-      if (sessionError) return next(sessionError);
-      req.session.userId = result.userId;
-      return req.session.save((saveError) => {
-        if (saveError) return next(saveError);
-        return res.redirect(`${env.APP_URL}/`);
-      });
-    });
+    return startSession(req, result.userId)
+      .then(() => res.redirect(`${env.APP_URL}/`))
+      .catch(next);
   })(req, res, next);
 }
 
@@ -42,9 +60,19 @@ export async function updateCurrentUser(req, res) {
   sendOk(res, toPublicUser(user));
 }
 
+// POST /api/auth/password: the signed-in user chooses a new password.
+// This browser stays signed in; every other session of the user is ended.
+export async function changePassword(req, res) {
+  const user = await changeMyPassword(req.user._id, req.validated.body, {
+    keepSessionId: req.sessionID,
+  });
+  sendOk(res, toPublicUser(user));
+}
+
 // POST /api/auth/logout: end the session on the server and clear the cookie.
 export function logout(req, res, next) {
-  req.session.destroy((error) => {
+  if (!req.session) return sendOk(res, { signedOut: true });
+  return req.session.destroy((error) => {
     if (error) return next(error);
     res.clearCookie(SESSION_COOKIE_NAME);
     return sendOk(res, { signedOut: true });
