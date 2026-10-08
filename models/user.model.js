@@ -18,6 +18,9 @@ const userSchema = new mongoose.Schema(
     // bcrypt hash for email + password sign-in (decision 0009). `select: false` keeps it out of
     // every query unless a query asks for it by name, so it cannot leak into a response by accident.
     passwordHash: { type: String, select: false },
+    // AES-256-GCM encrypted copy of the same password, so the CEO and the user's manager can
+    // view it (decision 0010). Read only through infra/password.js, one user at a time.
+    passwordEnc: { type: String, select: false },
     // True for a new account or after someone else reset the password: the user must choose
     // their own password before doing anything else.
     mustChangePassword: { type: Boolean, required: true, default: false },

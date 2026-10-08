@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getFormOptions,
+  getPassword,
   getUsers,
   patchUser,
   postResetPassword,
@@ -8,6 +9,7 @@ import {
 } from '../controllers/users.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
+import { createPasswordViewLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import {
@@ -31,6 +33,13 @@ router.patch(
   authorize('users', 'edit'),
   validate({ params: idParams, body: updateUserBody }),
   patchUser,
+);
+router.get(
+  '/:id/password',
+  authorize('users', 'edit'),
+  createPasswordViewLimiter(),
+  validate({ params: idParams }),
+  getPassword,
 );
 router.post(
   '/:id/reset-password',

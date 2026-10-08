@@ -3,7 +3,7 @@ import { Role } from '../models/role.model.js';
 import { getScope } from '../lib/can.js';
 import { scopeRank } from '../constants/permissions.js';
 import { conflict, forbidden, notFound, badRequest } from '../lib/errors.js';
-import { hashPassword } from '../infra/password.js';
+import { buildPasswordFields, readStoredPassword } from '../infra/password.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { diffFields, writeAudit } from '../lib/audit.js';
 
@@ -165,7 +165,7 @@ export async function createUser(actor, data, context = {}) {
     roleId: role._id,
     managerId,
     status: 'active',
-    passwordHash: await hashPassword(data.password),
+    ...(await buildPasswordFields(data.password)),
     mustChangePassword: true,
     invitedBy: actor._id,
   });
@@ -247,6 +247,27 @@ export async function updateUser(actor, userId, changes, context = {}) {
 }
 
 /**
+ * The real password of one user, for the CEO or that user's manager to see (decision 0010).
+ * One user at a time, the same scope check as editing them, and every view is audited.
+ * @returns {Promise<{ password: string | null, available: boolean }>}
+ *   available = false when the password was set before readable copies were stored.
+ */
+export async function getUserPassword(actor, userId, context = {}) {
+  const user = await User.findById(userId).select('+passwordEnc managerId').lean();
+  if (!user || !canManage(actor, 'edit', user)) throw notFound('User not found');
+
+  const password = readStoredPassword(user.passwordEnc);
+  await writeAudit({
+    actor,
+    action: 'user.password_viewed',
+    entityType: 'users',
+    entityId: user._id,
+    requestId: context.requestId,
+  });
+  return { password, available: password !== null };
+}
+
+/**
  * Set a new password for another user. They are signed out everywhere and must choose their
  * own password at the next sign-in.
  */
@@ -260,11 +281,7 @@ export async function resetUserPassword(actor, userId, password, context = {}) {
   await User.updateOne(
     { _id: user._id },
     {
-      $set: {
-        passwordHash: await hashPassword(password),
-        mustChangePassword: true,
-        passwordChangedAt: new Date(),
-      },
+      $set: { ...(await buildPasswordFields(password)), mustChangePassword: true },
     },
   );
   await revokeUserSessions(user._id);

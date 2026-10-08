@@ -1,6 +1,7 @@
 import {
   createUser,
   getUserFormOptions,
+  getUserPassword,
   listUsers,
   resetUserPassword,
   updateUser,
@@ -30,6 +31,13 @@ export async function patchUser(req, res) {
     requestId: req.id,
   });
   sendOk(res, user);
+}
+
+// GET /api/users/:id/password: the user's real password, for the CEO or that user's manager.
+// The response must never be stored by a browser or a proxy.
+export async function getPassword(req, res) {
+  res.set('Cache-Control', 'no-store');
+  sendOk(res, await getUserPassword(req.user, req.validated.params.id, { requestId: req.id }));
 }
 
 // POST /api/users/:id/reset-password: set a new first password for someone else.

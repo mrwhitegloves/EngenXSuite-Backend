@@ -4,6 +4,8 @@ import { SESSION_COOKIE_NAME } from '../middleware/session.js';
 import {
   changeMyPassword,
   loadRequestUser,
+  requestPasswordReset,
+  resetPasswordWithToken,
   signInWithPassword,
   toPublicUser,
   updateMyPreferences,
@@ -67,6 +69,22 @@ export async function changePassword(req, res) {
     keepSessionId: req.sessionID,
   });
   sendOk(res, toPublicUser(user));
+}
+
+// POST /api/auth/forgot-password: email a reset link. The answer is always the same, whether
+// or not the email belongs to a user, so this route cannot be used to find out who has an account.
+export async function forgotPassword(req, res) {
+  await requestPasswordReset(req.validated.body.email, {
+    appUrl: env.APP_URL,
+    isProduction: env.NODE_ENV === 'production',
+  });
+  sendOk(res, { requested: true });
+}
+
+// POST /api/auth/reset-password: the token from the emailed link plus a new password.
+export async function resetPassword(req, res) {
+  await resetPasswordWithToken(req.validated.body);
+  sendOk(res, { reset: true });
 }
 
 // POST /api/auth/logout: end the session on the server and clear the cookie.

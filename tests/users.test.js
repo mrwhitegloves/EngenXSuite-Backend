@@ -8,7 +8,7 @@ import { errorHandler } from '../middleware/errorHandler.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
-import { hashPassword } from '../infra/password.js';
+import { buildPasswordFields, hashPassword } from '../infra/password.js';
 import { runSeed } from '../seeds/seed.js';
 import { clearTestDb, startTestDb, stopTestDb } from './helpers/testDb.js';
 
@@ -29,7 +29,7 @@ async function makeUser(email, roleName, extra = {}) {
     name: email.split('@')[0],
     roleId: roles[roleName]._id,
     status: 'active',
-    passwordHash: await hashPassword(PASSWORD),
+    ...(await buildPasswordFields(PASSWORD)),
     ...extra,
   });
 }
@@ -364,5 +364,75 @@ describe('passwords', () => {
     expect(everything).not.toContain(PASSWORD);
     expect(everything).not.toContain(NEW_PASSWORD);
     expect(everything).not.toMatch(/\$2[aby]\$/);
+  });
+});
+
+describe('viewing stored passwords (decision 0010)', () => {
+  const view = (client, user) => client.get(`/api/users/${user._id}/password`);
+
+  it('the CEO sees the real password of any user; the response is not cacheable', async () => {
+    const response = await view(await signedInAs(ceo), otherAgent);
+    expect(response.status).toBe(200);
+    expect(response.body.data).toEqual({ password: PASSWORD, available: true });
+    expect(response.headers['cache-control']).toBe('no-store');
+  });
+
+  it('a manager sees only their own team; anyone else is 404', async () => {
+    const client = await signedInAs(manager);
+    expect((await view(client, agent)).body.data.password).toBe(PASSWORD);
+    expect((await view(client, otherAgent)).status).toBe(404);
+    expect((await view(client, ceo)).status).toBe(404);
+  });
+
+  it('a Sales Agent cannot view any password, and nobody can without signing in', async () => {
+    expect((await view(await signedInAs(agent), otherAgent)).status).toBe(403);
+    expect((await view(await signedInAs(agent), agent)).status).toBe(403);
+    expect((await view(request(app), agent)).status).toBe(401);
+  });
+
+  it('shows the password the user chose themselves after they change it', async () => {
+    const agentClient = await signedInAs(agent);
+    await agentClient
+      .post('/api/auth/password')
+      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+    const response = await view(await signedInAs(ceo), agent);
+    expect(response.body.data.password).toBe(NEW_PASSWORD);
+  });
+
+  it('the list of users never contains a password in any form', async () => {
+    const list = await (await signedInAs(ceo)).get('/api/users');
+    const text = JSON.stringify(list.body);
+    expect(text).not.toContain(PASSWORD);
+    expect(text).not.toMatch(/passwordEnc|passwordHash|v1:/);
+  });
+
+  it('is stored encrypted, not as readable text', async () => {
+    const stored = await User.findById(agent._id).select('+passwordEnc +passwordHash').lean();
+    expect(stored.passwordEnc).toMatch(/^v1:/);
+    expect(stored.passwordEnc).not.toContain(PASSWORD);
+    // Encrypting the same password twice gives different stored values.
+    const again = await buildPasswordFields(PASSWORD);
+    expect(again.passwordEnc).not.toBe(stored.passwordEnc);
+  });
+
+  it('says "not available" for a password set before readable copies were stored', async () => {
+    const legacy = await User.create({
+      email: 'legacy@engenx.in',
+      name: 'Legacy',
+      roleId: roles['Sales Agent']._id,
+      status: 'active',
+      passwordHash: await hashPassword(PASSWORD),
+    });
+    const response = await view(await signedInAs(ceo), legacy);
+    expect(response.body.data).toEqual({ password: null, available: false });
+  });
+
+  it('every view is written to the audit log, without the password', async () => {
+    await view(await signedInAs(manager), agent);
+    const entries = await AuditLog.find({ action: 'user.password_viewed' }).lean();
+    expect(entries).toHaveLength(1);
+    expect(String(entries[0].userId)).toBe(String(manager._id));
+    expect(String(entries[0].entityId)).toBe(String(agent._id));
+    expect(JSON.stringify(entries)).not.toContain(PASSWORD);
   });
 });

@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { env } from '../config/env.js';
 import { connectMongo, disconnectMongo } from '../infra/mongo.js';
-import { hashPassword } from '../infra/password.js';
+import { buildPasswordFields } from '../infra/password.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { writeAudit } from '../lib/audit.js';
 import { User } from '../models/user.model.js';
@@ -33,9 +33,8 @@ try {
       { _id: user._id },
       {
         $set: {
-          passwordHash: await hashPassword(temporaryPassword),
+          ...(await buildPasswordFields(temporaryPassword)),
           mustChangePassword: true,
-          passwordChangedAt: new Date(),
           status: user.status === 'deactivated' ? 'deactivated' : 'active',
         },
       },

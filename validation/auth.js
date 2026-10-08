@@ -19,6 +19,13 @@ export const changeMyPasswordBody = z
     path: ['newPassword'],
   });
 
+export const forgotPasswordBody = z.object({ email });
+
+export const resetPasswordWithTokenBody = z.object({
+  token: z.string().min(20).max(200),
+  newPassword,
+});
+
 // What a signed-in user may change about themselves. Role, email and status are NOT here:
 // those are changed only through the users endpoints.
 export const updateMyPreferencesBody = z

@@ -1,7 +1,12 @@
 import { User } from '../models/user.model.js';
 import { Role } from '../models/role.model.js';
 import { badRequest, forbidden, unauthorized } from '../lib/errors.js';
-import { hashPassword, verifyPassword } from '../infra/password.js';
+import { createHash, randomBytes } from 'node:crypto';
+import { PasswordReset } from '../models/passwordReset.model.js';
+import { buildPasswordFields, verifyPassword } from '../infra/password.js';
+import { sendMail } from '../infra/mailer.js';
+import { logger } from '../infra/logger.js';
+import { getBranding } from './settings.service.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { writeAudit } from '../lib/audit.js';
 
@@ -84,11 +89,7 @@ export async function changeMyPassword(userId, { currentPassword, newPassword },
   await User.updateOne(
     { _id: user._id },
     {
-      $set: {
-        passwordHash: await hashPassword(newPassword),
-        mustChangePassword: false,
-        passwordChangedAt: new Date(),
-      },
+      $set: { ...(await buildPasswordFields(newPassword)), mustChangePassword: false },
     },
   );
   await revokeUserSessions(user._id, { exceptSessionId: options.keepSessionId });
@@ -99,6 +100,79 @@ export async function changeMyPassword(userId, { currentPassword, newPassword },
     entityId: user._id,
   });
   return loadRequestUser(user._id);
+}
+
+const RESET_LINK_MINUTES = 30;
+const hashToken = (token) => createHash('sha256').update(token).digest('hex');
+
+/**
+ * "Forgot password": email a single-use link to the user, if that email belongs to an active
+ * user. Always resolves the same way, so the caller can never tell whether the email exists.
+ * @param {string} email   Already validated and lowercased
+ * @param {{ appUrl: string, isProduction: boolean }} options
+ */
+export async function requestPasswordReset(email, { appUrl, isProduction }) {
+  const user = await User.findOne({ email, status: { $ne: 'deactivated' } })
+    .select('_id email name')
+    .lean();
+  if (!user) return;
+
+  // Only the newest link works: older unused ones are removed.
+  await PasswordReset.deleteMany({ userId: user._id, usedAt: null });
+  const token = randomBytes(32).toString('base64url');
+  await PasswordReset.create({
+    userId: user._id,
+    tokenHash: hashToken(token),
+    expiresAt: new Date(Date.now() + RESET_LINK_MINUTES * 60 * 1000),
+  });
+
+  const link = `${appUrl}/reset-password?token=${token}`;
+  const { productName } = await getBranding();
+  const result = await sendMail({
+    to: user.email,
+    subject: `Reset your ${productName} password`,
+    text:
+      `Hello ${user.name},\n\n` +
+      `Use this link to choose a new password for ${productName}. ` +
+      `It works once and expires in ${RESET_LINK_MINUTES} minutes.\n\n${link}\n\n` +
+      'If you did not ask for this, you can ignore this email; your password stays the same.\n',
+  });
+
+  if (result.sent) return;
+  if (result.reason === 'not_configured' && !isProduction) {
+    // Development only, so the flow can be tried without an email account.
+    logger.warn({ resetLink: link }, 'Email is not configured: password reset link (development)');
+  } else {
+    logger.warn({ reason: result.reason }, 'Password reset email was not sent');
+  }
+}
+
+/**
+ * Finish "forgot password": the link's token plus a new password.
+ * @param {{ token: string, newPassword: string }} input  Already validated
+ */
+export async function resetPasswordWithToken({ token, newPassword }) {
+  // Find-and-mark in one step, so the same link can never be used twice, even at the same moment.
+  const reset = await PasswordReset.findOneAndUpdate(
+    { tokenHash: hashToken(token), usedAt: null, expiresAt: { $gt: new Date() } },
+    { $set: { usedAt: new Date() } },
+  );
+  const user = reset && (await User.findById(reset.userId).select('status').lean());
+  if (!user || user.status === 'deactivated') {
+    throw badRequest('This link is not valid any more. Ask for a new one.');
+  }
+
+  await User.updateOne(
+    { _id: user._id },
+    { $set: { ...(await buildPasswordFields(newPassword)), mustChangePassword: false } },
+  );
+  await revokeUserSessions(user._id);
+  await writeAudit({
+    actor: { _id: user._id },
+    action: 'user.password_reset_by_email',
+    entityType: 'users',
+    entityId: user._id,
+  });
 }
 
 /**

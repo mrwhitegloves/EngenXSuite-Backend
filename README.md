@@ -47,7 +47,14 @@ Two ways, both only for a user account that already exists (there is no sign-up)
 - Google: `/api/auth/google` → Google → `/api/auth/google/callback`, for a user whose email matches.
 
 The first CEO comes from the seed script; give them a password with `npm run set-password`.
-Passwords are hashed with bcrypt in `infra/password.js` and never logged or returned.
+Passwords are handled only in `infra/password.js`: a bcrypt hash for sign-in, plus an encrypted
+copy (`ENCRYPTION_KEY`) that the CEO and the user's manager can view through
+`GET /api/users/:id/password` (audited). They are never logged and never in a list response.
+
+Forgot password: `POST /api/auth/forgot-password` emails a single-use link (30 minutes);
+`POST /api/auth/reset-password` uses it. Email needs `SMTP_USER` and `SMTP_PASS` in `.env`
+(Google Workspace: a mailbox with 2-step verification and an App password). Without them, in
+development the link is written to the server log instead.
 
 ## How the code is organised
 
