@@ -18,12 +18,24 @@ const userRoom = (userId) => `user:${userId}`;
  * that is still active. Each socket joins one room: its own user's.
  *
  * @param {import('node:http').Server} httpServer
- * @param {{ sessionMiddleware: Function, loadUser: (userId: string) => Promise<object|null> }} options
+ * @param {{ sessionMiddleware: Function, loadUser: (userId: string) => Promise<object|null>,
+ *           allowedOrigins?: string[] }} options
  *        loadUser: the same function the REST API uses to load the signed-in user
+ *        allowedOrigins: addresses of our own client, e.g. ["https://sales.example.com"]
  */
-export function startRealtime(httpServer, { sessionMiddleware, loadUser }) {
+export function startRealtime(httpServer, { sessionMiddleware, loadUser, allowedOrigins = [] }) {
   // Server is the library's class; it is created once, here.
-  io = new Server(httpServer, { serveClient: false });
+  io = new Server(httpServer, {
+    serveClient: false,
+    // A page of another website must not open a connection with a signed-in user's cookie.
+    // Browsers always say which page opens a socket (Origin); no Origin means not a browser page.
+    allowRequest: (request, callback) => {
+      const origin = request.headers.origin;
+      const ownOrigins = [`http://${request.headers.host}`, `https://${request.headers.host}`];
+      const isAllowed = !origin || allowedOrigins.includes(origin) || ownOrigins.includes(origin);
+      callback(null, isAllowed);
+    },
+  });
 
   // Reads the session cookie of the connection request, exactly as for a REST request.
   io.engine.use(sessionMiddleware);

@@ -3,6 +3,7 @@ import helmet from 'helmet';
 import apiRoutes from './routes/index.js';
 import { passport } from './infra/googleAuth.js';
 import { requestLogger } from './middleware/requestId.js';
+import { createCsrfProtection } from './middleware/csrf.js';
 import { apiNotFound, errorHandler } from './middleware/errorHandler.js';
 
 /**
@@ -27,6 +28,8 @@ export function createApp({ sessionMiddleware } = {}) {
 
   app.use(requestLogger);
   app.use(helmet());
+  // Refuses changing requests that another website makes a signed-in browser send.
+  app.use(createCsrfProtection());
   app.use(express.json({ limit: '1mb' }));
   if (sessionMiddleware) app.use(sessionMiddleware);
   app.use(passport.initialize());

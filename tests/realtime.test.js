@@ -35,12 +35,12 @@ async function signIn(user) {
 }
 
 /** Open a socket; resolves with the socket once connected, rejects when the server refuses. */
-function openSocket(cookie) {
+function openSocket(cookie, origin) {
   const socket = connectSocket(baseUrl, {
     transports: ['websocket'],
     reconnection: false,
     forceNew: true,
-    extraHeaders: cookie ? { Cookie: cookie } : {},
+    extraHeaders: { ...(cookie ? { Cookie: cookie } : {}), ...(origin ? { Origin: origin } : {}) },
   });
   sockets.push(socket);
   socket.received = [];
@@ -62,7 +62,11 @@ beforeAll(async () => {
   await startTestDb();
   const sessionMiddleware = createSessionMiddleware();
   httpServer = createServer(createApp({ sessionMiddleware }));
-  startRealtime(httpServer, { sessionMiddleware, loadUser: loadRequestUser });
+  startRealtime(httpServer, {
+    sessionMiddleware,
+    loadUser: loadRequestUser,
+    allowedOrigins: ['https://client.example'],
+  });
   await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
   baseUrl = `http://127.0.0.1:${httpServer.address().port}`;
 });
@@ -107,6 +111,15 @@ describe('live updates (Socket.IO)', () => {
     const { cookie } = await signIn(agent);
     const socket = await openSocket(cookie);
     expect(socket.connected).toBe(true);
+  });
+
+  it("a page of another website cannot open a connection, even with the user's cookie", async () => {
+    const { cookie } = await signIn(agent);
+    await expect(openSocket(cookie, 'https://evil.example')).rejects.toThrow();
+    await expect(openSocket(cookie, 'https://client.example.evil.example')).rejects.toThrow();
+    // Our own client address, and the address the server itself is reached at, are allowed.
+    expect((await openSocket(cookie, 'https://client.example')).connected).toBe(true);
+    expect((await openSocket(cookie, baseUrl)).connected).toBe(true);
   });
 
   it('an event for one user reaches only that user, on all of their browsers', async () => {

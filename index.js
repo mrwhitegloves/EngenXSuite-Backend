@@ -28,7 +28,11 @@ async function start() {
     logger.info({ port: env.PORT }, 'Server listening');
   });
   // Live updates share the HTTP server and the session of the REST API.
-  startRealtime(server, { sessionMiddleware, loadUser: loadRequestUser });
+  startRealtime(server, {
+    sessionMiddleware,
+    loadUser: loadRequestUser,
+    allowedOrigins: [new URL(env.APP_URL).origin],
+  });
   // Background jobs run inside this same process. Without Redis they are simply off.
   startWorkers(JOB_HANDLERS);
 
