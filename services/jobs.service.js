@@ -7,7 +7,7 @@ import {
   retryFailedJob,
 } from '../infra/queues.js';
 import { getRedisStatus } from '../infra/redis.js';
-import { JOB_NAMES } from '../jobs/index.js';
+import { JOB_NAMES } from '../constants/jobNames.js';
 
 // Settings → Background jobs: see what the queues hold, look at failed jobs, retry or delete them.
 // Retry and delete are written to the log with who did it. They are not in the audit log: that

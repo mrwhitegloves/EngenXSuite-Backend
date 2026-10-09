@@ -66,6 +66,23 @@ export async function uploadObject({ key, body, contentType }) {
   return objectUrl(key);
 }
 
+/**
+ * Read a stored file into memory. For files our own code wrote (backups), never for user uploads
+ * of unknown size.
+ * @returns {Promise<Buffer | null>} null when no object has this key
+ */
+export async function readObject(key) {
+  try {
+    const response = await getClient().send(
+      new GetObjectCommand({ Bucket: env.S3_BUCKET, Key: key }),
+    );
+    return Buffer.from(await response.Body.transformToByteArray());
+  } catch (error) {
+    if (error?.name === 'NoSuchKey' || error?.$metadata?.httpStatusCode === 404) return null;
+    throw error;
+  }
+}
+
 /** Remove a file. A failure is logged and ignored: a leftover object must not break a request. */
 export async function deleteObject(key) {
   try {

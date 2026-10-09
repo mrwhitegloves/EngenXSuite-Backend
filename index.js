@@ -7,6 +7,7 @@ import { connectRedis, disconnectRedis } from './infra/redis.js';
 import { closeQueues } from './infra/queues.js';
 import { startWorkers, stopWorkers } from './infra/workers.js';
 import { JOB_HANDLERS } from './jobs/index.js';
+import { registerSchedules } from './jobs/schedules.js';
 import { startRealtime, stopRealtime } from './infra/realtime.js';
 import { loadRequestUser } from './services/auth.service.js';
 import { flushSentry, initSentry, reportError } from './infra/sentry.js';
@@ -35,6 +36,8 @@ async function start() {
   });
   // Background jobs run inside this same process. Without Redis they are simply off.
   startWorkers(JOB_HANDLERS);
+  // Jobs that run by the clock (production only). Not awaited: it waits for Redis by itself.
+  registerSchedules();
 
   // Cloud Run sends SIGTERM before stopping an instance. Stop taking new requests,
   // let running ones finish, then close the database connection.

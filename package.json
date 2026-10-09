@@ -13,7 +13,9 @@
     "format": "prettier --write .",
     "test": "vitest run",
     "seed": "node --env-file-if-exists=.env seeds/run.js",
-    "set-password": "node --env-file-if-exists=.env seeds/setPassword.js"
+    "set-password": "node --env-file-if-exists=.env seeds/setPassword.js",
+    "backup": "node --env-file-if-exists=.env scripts/backup.js",
+    "restore": "node --env-file-if-exists=.env scripts/restore.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1148.0",

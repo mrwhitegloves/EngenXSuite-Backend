@@ -86,6 +86,21 @@ export function enqueue(queueName, jobName, data = {}, options = {}) {
   });
 }
 
+/**
+ * Run a job by the clock. The same `id` replaces an earlier schedule, so calling this at every
+ * server start never creates a second copy.
+ * @param {{ id: string, queue: string, cron: string, timezone: string, jobName: string }} schedule
+ */
+export function scheduleRepeatingJob({ id, queue: queueName, cron, timezone, jobName }) {
+  return withQueue(queueName, async (queue) => {
+    await queue.upsertJobScheduler(
+      id,
+      { pattern: cron, tz: timezone },
+      { name: jobName, data: {} },
+    );
+  });
+}
+
 /** How many jobs each queue holds in each state. Queues that cannot be read report nulls. */
 export async function getQueueCounts() {
   return Promise.all(
