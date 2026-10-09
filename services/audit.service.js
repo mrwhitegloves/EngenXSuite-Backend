@@ -1,0 +1,82 @@
+import { AuditLog } from '../models/auditLog.model.js';
+import { Role } from '../models/role.model.js';
+import { User } from '../models/user.model.js';
+import { dateRangeFilter, resolveDateRange } from '../lib/dateRange.js';
+
+// Reading the audit log (Master Prompt Section 54). Read-only: nothing here writes, changes or
+// deletes an entry. Entries are written only by writeAudit() in lib/audit.js.
+
+// Which collection gives a readable name for the record an entry is about.
+const NAME_SOURCES = {
+  users: { model: User, field: 'name' },
+  roles: { model: Role, field: 'name' },
+};
+
+async function loadNames(model, field, ids) {
+  if (ids.length === 0) return new Map();
+  const rows = await model
+    .find({ _id: { $in: ids } })
+    .select(field)
+    .lean();
+  return new Map(rows.map((row) => [String(row._id), row[field]]));
+}
+
+/**
+ * @param {{ page: number, pageSize: number, userId?: string, entityType?: string, action?: string,
+ *           range?: string, from?: string, to?: string }} query  Already validated
+ */
+export async function listAuditLogs({ page, pageSize, userId, entityType, action, ...dates }) {
+  const filter = { ...dateRangeFilter('at', resolveDateRange(dates)) };
+  if (userId) filter.userId = userId === 'system' ? null : userId;
+  if (entityType) filter.entityType = entityType;
+  if (action) filter.action = action;
+
+  const [entries, total] = await Promise.all([
+    AuditLog.find(filter)
+      .sort({ at: -1, _id: -1 })
+      .skip((page - 1) * pageSize)
+      .limit(pageSize)
+      .lean(),
+    AuditLog.countDocuments(filter),
+  ]);
+
+  // Names for "who" and for "which record", looked up once for the whole page.
+  const idsOf = (type) =>
+    entries.filter((entry) => entry.entityType === type).map((entry) => entry.entityId);
+  const actorIds = entries.map((entry) => entry.userId).filter(Boolean);
+  const [userNames, roleNames] = await Promise.all([
+    loadNames(User, NAME_SOURCES.users.field, [...actorIds, ...idsOf('users')]),
+    loadNames(Role, NAME_SOURCES.roles.field, idsOf('roles')),
+  ]);
+  const entityNames = { users: userNames, roles: roleNames };
+
+  const items = entries.map((entry) => ({
+    id: String(entry._id),
+    at: entry.at,
+    action: entry.action,
+    // null: done by the system itself. A name of null: that user no longer exists.
+    user: entry.userId
+      ? { id: String(entry.userId), name: userNames.get(String(entry.userId)) ?? null }
+      : null,
+    entityType: entry.entityType,
+    entityId: String(entry.entityId),
+    entityName: entityNames[entry.entityType]?.get(String(entry.entityId)) ?? null,
+    oldValue: entry.oldValue ?? null,
+    newValue: entry.newValue ?? null,
+  }));
+  return { items, pagination: { page, pageSize, total } };
+}
+
+/** What the filter dropdowns offer: the users, record types and actions that exist. */
+export async function getAuditFilterOptions() {
+  const [users, entityTypes, actions] = await Promise.all([
+    User.find().select('name').sort({ name: 1 }).lean(),
+    AuditLog.distinct('entityType'),
+    AuditLog.distinct('action'),
+  ]);
+  return {
+    users: users.map((user) => ({ id: String(user._id), name: user.name })),
+    entityTypes: entityTypes.sort(),
+    actions: actions.sort(),
+  };
+}

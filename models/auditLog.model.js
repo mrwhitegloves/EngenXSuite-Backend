@@ -23,6 +23,8 @@ const auditLogSchema = new mongoose.Schema(
 auditLogSchema.index({ entityType: 1, entityId: 1, at: -1 });
 auditLogSchema.index({ userId: 1, at: -1 });
 auditLogSchema.index({ action: 1, at: -1 });
+// The Audit log screen without filters: newest first, and by date range.
+auditLogSchema.index({ at: -1 });
 
 export const AuditLog =
   mongoose.models.AuditLog ?? mongoose.model('AuditLog', auditLogSchema, 'audit_logs');

@@ -5,6 +5,7 @@ import publicRoutes from './public.routes.js';
 import usersRoutes from './users.routes.js';
 import rolesRoutes from './roles.routes.js';
 import jobsRoutes from './jobs.routes.js';
+import auditRoutes from './audit.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -15,5 +16,6 @@ router.use('/public', publicRoutes);
 router.use('/users', usersRoutes);
 router.use('/roles', rolesRoutes);
 router.use('/jobs', jobsRoutes);
+router.use('/audit-logs', auditRoutes);
 
 export default router;

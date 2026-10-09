@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../infra/password.js';
+import { DATE_PRESETS } from '../lib/dateRange.js';
 
 // Building blocks reused by the validation schemas of every feature.
 
@@ -24,6 +25,14 @@ export const phone = z
   .regex(/^\+[1-9]\d{7,14}$/, 'Use the international format, for example +919876543210');
 
 export const idParams = z.object({ id: objectId });
+
+// Every endpoint with a date filter accepts these (Section 74). The values are worked out by
+// resolveDateRange() in lib/dateRange.js, which also reports a wrong or impossible range.
+export const dateRange = {
+  range: z.enum(DATE_PRESETS).optional(),
+  from: z.string().trim().max(10).optional(),
+  to: z.string().trim().max(10).optional(),
+};
 
 // Every list endpoint accepts these (Master Prompt Section 74).
 export const pagination = {
