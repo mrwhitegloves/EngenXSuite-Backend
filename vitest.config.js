@@ -4,6 +4,9 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.js'],
     environment: 'node',
+    // One test file at a time. Each database test file starts its own in-memory MongoDB, and
+    // several of those at once run a small computer out of memory ("Failed to open a session").
+    fileParallelism: false,
     // The first run downloads a MongoDB binary for the in-memory test database.
     hookTimeout: 180_000,
     // Values the server needs to load. Tests never read the real .env file and never

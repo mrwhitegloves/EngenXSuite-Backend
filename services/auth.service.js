@@ -5,6 +5,7 @@ import { passwordsMatch } from '../infra/password.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { writeAudit } from '../lib/audit.js';
 import { toReadableUrl } from '../infra/storage.js';
+import { importGooglePicture } from './avatar.service.js';
 
 // Sign-in rules. Two ways in: email + password, and Google. Both work only for an account that
 // already exists in the `users` collection; there is no public sign-up (decision 0009).
@@ -43,11 +44,22 @@ export async function signInWithGoogle(profile, { workspaceDomain }) {
     lastLoginAt: new Date(),
     isWorkspaceAccount: isOnDomain(email, workspaceDomain),
   };
-  if (profile.avatarUrl && !user.avatarUrl) update.avatarUrl = profile.avatarUrl;
+  // Take the Google picture when the user has none, or still has an older Google link
+  // (Google changes these addresses, and old ones stop working).
+  const hasOwnPicture = user.avatarUrl && !user.avatarUrl.includes('.googleusercontent.com/');
+  if (profile.avatarUrl && !hasOwnPicture) update.avatarUrl = profile.avatarUrl;
   // Keep the name an administrator typed; only fill it in when it is a placeholder.
   if (profile.name && (!user.name || user.name === user.email)) update.name = profile.name;
 
   await User.updateOne({ _id: user._id }, { $set: update });
+
+  // A user without a picture of their own gets their Google picture copied into our storage.
+  // (A picture already stored with us, including one the user uploaded, is never replaced.)
+  // Not awaited: sign-in must not wait for it, and the function never throws.
+  const currentPicture = update.avatarUrl ?? user.avatarUrl;
+  if (profile.avatarUrl && currentPicture === profile.avatarUrl) {
+    void importGooglePicture({ userId: user._id, url: profile.avatarUrl });
+  }
   return { userId: String(user._id) };
 }
 

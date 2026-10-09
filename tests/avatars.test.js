@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 
 // S3 is the one thing replaced in this file: nothing is uploaded anywhere. The fake keeps the
@@ -28,6 +28,7 @@ const { AuditLog } = await import('../models/auditLog.model.js');
 const { Role } = await import('../models/role.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed } = await import('../seeds/seed.js');
+const { importGooglePicture } = await import('../services/avatar.service.js');
 const { clearTestDb, startTestDb, stopTestDb } = await import('./helpers/testDb.js');
 
 const PASSWORD = 'correct-horse-battery';
@@ -211,5 +212,68 @@ describe('the CEO or a manager changes the picture of a user', () => {
     const entries = await AuditLog.find({ action: 'user.avatar_changed' }).lean();
     expect(entries).toHaveLength(1);
     expect(String(entries[0].userId)).toBe(String(ceo._id));
+  });
+});
+
+describe('copying a Google profile picture into our storage', () => {
+  const GOOGLE_URL = 'https://lh3.googleusercontent.com/a-/ALV-abc123=s96-c';
+  const fetchReturning = (body, ok = true) =>
+    vi.fn(async () => ({ ok, arrayBuffer: async () => body }));
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('saves the picture in storage and replaces the Google link with the S3 address', async () => {
+    await User.updateOne({ _id: agent._id }, { $set: { avatarUrl: GOOGLE_URL } });
+    const fetchMock = fetchReturning(PNG);
+    vi.stubGlobal('fetch', fetchMock);
+
+    expect(await importGooglePicture({ userId: agent._id, url: GOOGLE_URL })).toBe(true);
+    // A larger picture than Google's default 96 pixels is asked for.
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://lh3.googleusercontent.com/a-/ALV-abc123=s256-c',
+    );
+    expect((await User.findById(agent._id).lean()).avatarUrl).toMatch(
+      new RegExp(`^${BUCKET_URL}avatars/${agent._id}/`),
+    );
+    expect(stored.size).toBe(1);
+  });
+
+  it('refuses any address that is not a Google picture host over https', async () => {
+    const fetchMock = fetchReturning(PNG);
+    vi.stubGlobal('fetch', fetchMock);
+    const refused = [
+      'http://lh3.googleusercontent.com/a/x',
+      'https://evil.example.com/lh3.googleusercontent.com/x',
+      'https://googleusercontent.com.evil.example/x',
+      'http://169.254.169.254/latest/meta-data/',
+      'file:///etc/passwd',
+      'not a url',
+    ];
+    for (const url of refused) {
+      expect(await importGooglePicture({ userId: agent._id, url })).toBe(false);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(stored.size).toBe(0);
+  });
+
+  it('keeps what the user had when Google answers with an error or with something that is not an image', async () => {
+    await User.updateOne({ _id: agent._id }, { $set: { avatarUrl: GOOGLE_URL } });
+
+    vi.stubGlobal('fetch', fetchReturning(PNG, false));
+    expect(await importGooglePicture({ userId: agent._id, url: GOOGLE_URL })).toBe(false);
+
+    vi.stubGlobal('fetch', fetchReturning(NOT_AN_IMAGE));
+    expect(await importGooglePicture({ userId: agent._id, url: GOOGLE_URL })).toBe(false);
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new Error('network down');
+      }),
+    );
+    expect(await importGooglePicture({ userId: agent._id, url: GOOGLE_URL })).toBe(false);
+
+    expect((await User.findById(agent._id).lean()).avatarUrl).toBe(GOOGLE_URL);
+    expect(stored.size).toBe(0);
   });
 });

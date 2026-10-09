@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import { User } from '../models/user.model.js';
-import { deleteObject, keyFromUrl, uploadObject } from '../infra/storage.js';
+import { deleteObject, isStorageConfigured, keyFromUrl, uploadObject } from '../infra/storage.js';
+import { logger } from '../infra/logger.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { writeAudit } from '../lib/audit.js';
 
@@ -54,6 +55,47 @@ export async function saveAvatar({ actor, userId, file, requestId }) {
     requestId,
   });
   return url;
+}
+
+const MAX_IMPORT_BYTES = 2 * 1024 * 1024;
+
+/** Only pictures served by Google's own picture hosts may be copied, and only over https. */
+function isGooglePictureUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' && parsed.hostname.endsWith('.googleusercontent.com');
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Copy a user's Google profile picture into our own storage, so the CRM does not depend on a
+ * Google link (those are rate-limited and can stop working). Afterwards `avatarUrl` is an S3
+ * address like every uploaded picture.
+ *
+ * Never throws: when the copy is not possible the user simply keeps what they had.
+ * @returns {Promise<boolean>} true when the picture was copied
+ */
+export async function importGooglePicture({ userId, url }) {
+  if (!isStorageConfigured() || !isGooglePictureUrl(url)) return false;
+  try {
+    // The address is asked for a larger picture than Google's default 96 pixels.
+    const largeUrl = url.replace(/=s\d+(-c)?$/, '=s256-c');
+    const response = await fetch(largeUrl, {
+      signal: AbortSignal.timeout(5000),
+      redirect: 'error',
+    });
+    if (!response.ok) return false;
+    const buffer = Buffer.from(await response.arrayBuffer());
+    if (buffer.length === 0 || buffer.length > MAX_IMPORT_BYTES) return false;
+
+    await saveAvatar({ actor: { _id: userId }, userId, file: { buffer } });
+    return true;
+  } catch (error) {
+    logger.warn({ err: error }, 'Google profile picture could not be copied');
+    return false;
+  }
 }
 
 /** Remove a user's profile picture; the initials are shown again. */
