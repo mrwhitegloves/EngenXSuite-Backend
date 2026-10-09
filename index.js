@@ -1,6 +1,7 @@
 import { env } from './config/env.js';
 import { logger } from './infra/logger.js';
 import { connectMongo, disconnectMongo } from './infra/mongo.js';
+import { runPendingMigrations } from './infra/migrations.js';
 import { configureGoogleAuth } from './infra/googleAuth.js';
 import { createSessionMiddleware } from './middleware/session.js';
 import { connectRedis, disconnectRedis } from './infra/redis.js';
@@ -18,6 +19,8 @@ import { createApp } from './app.js';
 async function start() {
   initSentry();
   await connectMongo(env.DATABASE_URI);
+  // Bring the data up to what this code expects, before any request is served.
+  await runPendingMigrations();
   // Redis connects in the background; the server does not wait for it and runs without it.
   connectRedis();
   logger.info({ database: env.DATABASE_KIND }, 'Using database');
