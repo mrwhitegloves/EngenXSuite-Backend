@@ -1,3 +1,4 @@
+import { Account } from '../models/account.model.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
@@ -10,6 +11,7 @@ import { buildFilter, runListQuery } from '../lib/queryBuilder.js';
 const NAME_SOURCES = {
   users: { model: User, field: 'name' },
   roles: { model: Role, field: 'name' },
+  accounts: { model: Account, field: 'name' },
 };
 
 // Record types of which there is only one: they have a fixed name instead of a lookup.
@@ -46,11 +48,13 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
   const idsOf = (type) =>
     entries.filter((entry) => entry.entityType === type).map((entry) => entry.entityId);
   const actorIds = entries.map((entry) => entry.userId).filter(Boolean);
-  const [userNames, roleNames] = await Promise.all([
+  const [userNames, roleNames, accountNames] = await Promise.all([
     loadNames(User, NAME_SOURCES.users.field, [...actorIds, ...idsOf('users')]),
     loadNames(Role, NAME_SOURCES.roles.field, idsOf('roles')),
+    // A deleted account keeps its name here: the log must still say what was deleted.
+    loadNames(Account, NAME_SOURCES.accounts.field, idsOf('accounts')),
   ]);
-  const entityNames = { users: userNames, roles: roleNames };
+  const entityNames = { users: userNames, roles: roleNames, accounts: accountNames };
 
   const items = entries.map((entry) => ({
     id: String(entry._id),

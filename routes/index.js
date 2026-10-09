@@ -10,6 +10,7 @@ import backupsRoutes from './backups.routes.js';
 import savedViewsRoutes from './savedViews.routes.js';
 import settingsRoutes from './settings.routes.js';
 import realtimeRoutes from './realtime.routes.js';
+import accountsRoutes from './accounts.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -25,5 +26,6 @@ router.use('/backups', backupsRoutes);
 router.use('/saved-views', savedViewsRoutes);
 router.use('/settings', settingsRoutes);
 router.use('/realtime', realtimeRoutes);
+router.use('/accounts', accountsRoutes);
 
 export default router;
