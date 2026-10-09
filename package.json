@@ -7,7 +7,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --watch index.js",
+    "dev": "nodemon",
     "start": "node --env-file-if-exists=.env index.js",
     "lint": "eslint . && prettier --check .",
     "format": "prettier --write .",
@@ -16,12 +16,17 @@
     "set-password": "node --env-file-if-exists=.env seeds/setPassword.js"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1148.0",
+    "@aws-sdk/s3-request-presigner": "^3.1148.0",
+    "@sentry/node": "^11.6.0",
     "connect-mongo": "^6.0.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
     "helmet": "^8.3.0",
+    "ioredis": "^6.0.0",
     "mongoose": "^9.11.1",
+    "multer": "^2.4.0",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pino": "^10.4.0",
@@ -33,6 +38,7 @@
     "eslint": "^9.39.5",
     "globals": "^17.13.0",
     "mongodb-memory-server": "^11.3.0",
+    "nodemon": "^3.1.14",
     "prettier": "^3.9.9",
     "supertest": "^7.3.1",
     "vite": "^8.3.3",

@@ -23,17 +23,6 @@ export const phone = z
   .trim()
   .regex(/^\+[1-9]\d{7,14}$/, 'Use the international format, for example +919876543210');
 
-// A web address of a picture. Only https, so the page never loads mixed or script content.
-export const imageUrl = z
-  .string()
-  .trim()
-  .max(500)
-  .pipe(
-    z
-      .url('Enter a full web address')
-      .startsWith('https://', 'The address must start with https://'),
-  );
-
 export const idParams = z.object({ id: objectId });
 
 // Every list endpoint accepts these (Master Prompt Section 74).

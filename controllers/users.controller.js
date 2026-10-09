@@ -1,4 +1,7 @@
+import { removeAvatar, saveAvatar } from '../services/avatar.service.js';
+import { toReadableUrl } from '../infra/storage.js';
 import {
+  assertCanEditUser,
   createUser,
   getUserFormOptions,
   getUserPassword,
@@ -31,6 +34,22 @@ export async function patchUser(req, res) {
     requestId: req.id,
   });
   sendOk(res, user);
+}
+
+// POST /api/users/:id/avatar: upload a profile picture for a user (multipart field "file").
+export async function postAvatar(req, res) {
+  const userId = req.validated.params.id;
+  await assertCanEditUser(req.user, userId);
+  const url = await saveAvatar({ actor: req.user, userId, file: req.file, requestId: req.id });
+  sendOk(res, { avatarUrl: await toReadableUrl(url) });
+}
+
+// DELETE /api/users/:id/avatar: remove the picture; the initials are shown again.
+export async function deleteAvatar(req, res) {
+  const userId = req.validated.params.id;
+  await assertCanEditUser(req.user, userId);
+  await removeAvatar({ actor: req.user, userId, requestId: req.id });
+  sendOk(res, { avatarUrl: null });
 }
 
 // GET /api/users/:id/password: the user's password, for the CEO or that user's manager.

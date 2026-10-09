@@ -8,6 +8,7 @@ import {
   toPublicUser,
   updateMyPreferences,
 } from '../services/auth.service.js';
+import { removeAvatar, saveAvatar } from '../services/avatar.service.js';
 import { isAppError } from '../lib/errors.js';
 import { sendOk } from '../lib/respond.js';
 
@@ -65,6 +66,18 @@ export function getCurrentUser(req, res) {
 export async function updateCurrentUser(req, res) {
   const user = await updateMyPreferences(req.user._id, req.validated.body);
   sendOk(res, toPublicUser(user));
+}
+
+// POST /api/auth/me/avatar: the signed-in user uploads their own profile picture.
+export async function uploadMyAvatar(req, res) {
+  await saveAvatar({ actor: req.user, userId: req.user._id, file: req.file, requestId: req.id });
+  sendOk(res, toPublicUser(await loadRequestUser(req.user._id)));
+}
+
+// DELETE /api/auth/me/avatar: the signed-in user removes their own profile picture.
+export async function deleteMyAvatar(req, res) {
+  await removeAvatar({ actor: req.user, userId: req.user._id, requestId: req.id });
+  sendOk(res, toPublicUser(await loadRequestUser(req.user._id)));
 }
 
 // POST /api/auth/logout: end the session on the server and clear the cookie.

@@ -4,6 +4,7 @@ import { forbidden, notFound, unauthorized } from '../lib/errors.js';
 import { passwordsMatch } from '../infra/password.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { writeAudit } from '../lib/audit.js';
+import { toReadableUrl } from '../infra/storage.js';
 
 // Sign-in rules. Two ways in: email + password, and Google. Both work only for an account that
 // already exists in the `users` collection; there is no public sign-up (decision 0009).
@@ -122,7 +123,8 @@ export async function loadRequestUser(userId) {
     _id: user._id,
     email: user.email,
     name: user.name,
-    avatarUrl: user.avatarUrl ?? null,
+    // A picture stored in our private bucket becomes a link the browser can open.
+    avatarUrl: await toReadableUrl(user.avatarUrl),
     theme: user.theme,
     isWorkspaceAccount: user.isWorkspaceAccount,
     notificationsEnabled: user.notificationsEnabled,

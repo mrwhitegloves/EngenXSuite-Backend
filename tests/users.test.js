@@ -185,14 +185,12 @@ describe('creating user accounts', () => {
 
   it('the CEO creates an account and the new user signs in straight away', async () => {
     const client = await signedInAs(ceo);
-    const created = await client
-      .post('/api/users')
-      .send(newUser({ phone: '+919876543210', avatarUrl: 'https://example.com/a.png' }));
+    const created = await client.post('/api/users').send(newUser({ phone: '+919876543210' }));
     expect(created.status).toBe(201);
     expect(created.body.data).toMatchObject({
       email: 'new@engenx.in',
       status: 'active',
-      avatarUrl: 'https://example.com/a.png',
+      avatarUrl: null,
       role: { name: 'Sales Agent' },
     });
     expect(JSON.stringify(created.body)).not.toContain(PASSWORD);
@@ -201,7 +199,7 @@ describe('creating user accounts', () => {
     expect(signedIn.status).toBe(200);
   });
 
-  it('rejects a duplicate email, a short password, an unknown account type and a non-https picture', async () => {
+  it('rejects a duplicate email, a short password and an unknown account type', async () => {
     const client = await signedInAs(ceo);
     expect((await client.post('/api/users').send(newUser({ email: agent.email }))).status).toBe(
       409,
@@ -211,10 +209,6 @@ describe('creating user accounts', () => {
       .post('/api/users')
       .send(newUser({ roleId: '0123456789abcdef01234567' }));
     expect(unknownRole.status).toBe(400);
-    const badPicture = await client
-      .post('/api/users')
-      .send(newUser({ avatarUrl: 'javascript:alert(1)' }));
-    expect(badPicture.status).toBe(400);
   });
 
   it("a manager's new user reports to that manager by default", async () => {
@@ -300,14 +294,12 @@ describe('editing users (decision 0011)', () => {
       roleId: String(roles['Sales Manager']._id),
       managerId: String(ceo._id),
       phone: '+919812345678',
-      avatarUrl: 'https://example.com/new.png',
     });
     expect(response.status).toBe(200);
     expect(response.body.data).toMatchObject({
       name: 'Renamed Agent',
       email: 'renamed@gmail.com',
       phone: '+919812345678',
-      avatarUrl: 'https://example.com/new.png',
       managerId: String(ceo._id),
       role: { name: 'Sales Manager' },
     });

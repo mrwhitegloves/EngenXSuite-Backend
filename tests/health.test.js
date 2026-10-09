@@ -15,7 +15,7 @@ describe('health endpoints', () => {
   it('GET /api/health reports 503 and mongo down when the database is not connected', async () => {
     const response = await request(app).get('/api/health');
     expect(response.status).toBe(503);
-    expect(response.body.data).toEqual({ status: 'down', components: { mongo: 'down' } });
+    expect(response.body.data).toMatchObject({ status: 'down', components: { mongo: 'down' } });
   });
 
   it('returns a request id header on every response', async () => {

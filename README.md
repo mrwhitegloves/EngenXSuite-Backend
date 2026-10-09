@@ -22,7 +22,7 @@ npm run seed              # creates roles, settings and the first CEO in the dev
 
 | Command | What it does |
 |---|---|
-| `npm run dev` | Starts the API on port 3000 and restarts on file changes |
+| `npm run dev` | Starts the API on port 3000 with nodemon and restarts on file changes (settings in `nodemon.json`) |
 | `npm start` | Starts the API once (production style) |
 | `npm run lint` | ESLint (including the "no classes" rule) and a Prettier check |
 | `npm run format` | Formats the code with Prettier |
@@ -57,6 +57,20 @@ the new password. No email is sent and the old password is not asked.
 
 Account types and permissions: `GET /api/roles`, `PATCH /api/roles/:id` (Settings → Roles and
 permissions). A change that would leave nobody able to manage settings and users is refused.
+
+## Files, error tracking and Redis
+
+All three are optional: without their values in `.env` the server still runs.
+
+- **Profile pictures (S3):** `POST /api/auth/me/avatar` (own picture) and
+  `POST /api/users/:id/avatar` (CEO or the user's manager), multipart field `file`, PNG / JPG /
+  WebP up to 2 MB. The file goes to the bucket (`S3_DEV_BUCKET`, or `S3_PROD_BUCKET` in production)
+  and only its S3 address is saved in `users.avatarUrl`. The buckets are private; responses carry
+  a signed link that works for one hour.
+- **Sentry:** unexpected errors (HTTP 500) are reported with the request id and user id, without
+  request bodies, cookies or personal data.
+- **Redis:** connects in the background. `GET /api/health` shows `redis: up / down /
+  not_configured`; "down" makes the status `degraded`, not `down`.
 
 ## How the code is organised
 

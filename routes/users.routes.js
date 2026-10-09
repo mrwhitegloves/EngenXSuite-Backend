@@ -1,14 +1,17 @@
 import { Router } from 'express';
 import {
+  deleteAvatar,
   getFormOptions,
   getPassword,
   getUsers,
   patchUser,
+  postAvatar,
   postUser,
 } from '../controllers/users.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
 import { createPasswordViewLimiter } from '../middleware/rateLimit.js';
+import { MAX_AVATAR_BYTES, singleFileUpload } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import { createUserBody, listUsersQuery, updateUserBody } from '../validation/users.js';
@@ -27,6 +30,19 @@ router.patch(
   authorize('users', 'edit'),
   validate({ params: idParams, body: updateUserBody }),
   patchUser,
+);
+router.post(
+  '/:id/avatar',
+  authorize('users', 'edit'),
+  validate({ params: idParams }),
+  singleFileUpload({ maxBytes: MAX_AVATAR_BYTES }),
+  postAvatar,
+);
+router.delete(
+  '/:id/avatar',
+  authorize('users', 'edit'),
+  validate({ params: idParams }),
+  deleteAvatar,
 );
 router.get(
   '/:id/password',

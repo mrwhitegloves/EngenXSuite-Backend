@@ -6,6 +6,7 @@ import { scopeRank } from '../constants/permissions.js';
 import { conflict, forbidden, notFound, badRequest } from '../lib/errors.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { diffFields, writeAudit } from '../lib/audit.js';
+import { toReadableUrl } from '../infra/storage.js';
 
 // User accounts: created and managed inside the CRM by the CEO and Sales Managers
 // (decisions 0009 and 0011). Every function takes the acting user first and enforces what that
@@ -47,13 +48,14 @@ function mayAssignRole(actor, role) {
 }
 
 /** How a user is sent to the browser in lists. Never includes the password. */
-function toUserView(user, rolesById) {
+async function toUserView(user, rolesById) {
   return {
     id: String(user._id),
     name: user.name,
     email: user.email,
     phone: user.phone ?? null,
-    avatarUrl: user.avatarUrl ?? null,
+    // The saved S3 address is turned into a link the browser can open (the bucket is private).
+    avatarUrl: await toReadableUrl(user.avatarUrl),
     status: user.status,
     role: { id: String(user.roleId), name: rolesById.get(String(user.roleId))?.name ?? '' },
     managerId: user.managerId ? String(user.managerId) : null,
@@ -117,7 +119,7 @@ export async function listUsers(actor, { page, pageSize, search, status, roleId 
     loadRolesById(),
   ]);
   return {
-    items: users.map((user) => toUserView(user, rolesById)),
+    items: await Promise.all(users.map((user) => toUserView(user, rolesById))),
     pagination: { page, pageSize, total },
   };
 }
@@ -145,7 +147,7 @@ export async function getUserFormOptions(actor) {
  * Create a user account with its password.
  * @param {object} actor
  * @param {{ name: string, email: string, password: string, roleId: string, managerId?: string | null,
- *           phone?: string, avatarUrl?: string }} data
+ *           phone?: string }} data
  * @param {{ requestId?: string }} [context]
  */
 export async function createUser(actor, data, context = {}) {
@@ -166,7 +168,6 @@ export async function createUser(actor, data, context = {}) {
     name: data.name,
     email: data.email,
     phone: data.phone,
-    avatarUrl: data.avatarUrl,
     roleId: role._id,
     managerId,
     status: 'active',
@@ -210,7 +211,6 @@ export async function updateUser(actor, userId, changes, context = {}) {
 
   if (changes.name !== undefined) update.name = changes.name;
   if (changes.phone !== undefined) update.phone = changes.phone;
-  if (changes.avatarUrl !== undefined) update.avatarUrl = changes.avatarUrl;
 
   if (changes.email !== undefined && changes.email !== user.email) {
     if (await User.exists({ email: changes.email, _id: { $ne: user._id } })) {
@@ -293,6 +293,19 @@ export async function updateUser(actor, userId, changes, context = {}) {
     });
   }
   return toUserView({ ...user, ...update }, rolesById);
+}
+
+/**
+ * Throws 404 unless the actor may edit this user (the CEO: anyone including themselves;
+ * a manager: their own team). Used by the profile picture endpoints.
+ */
+export async function assertCanEditUser(actor, userId) {
+  const user = await User.findById(userId).select('managerId').lean();
+  const isSelf = user && sameId(user._id, actor._id);
+  const allowed =
+    user &&
+    (canManage(actor, 'edit', user) || (isSelf && getScope(actor, FEATURE, 'edit') === 'all'));
+  if (!allowed) throw notFound('User not found');
 }
 
 /**

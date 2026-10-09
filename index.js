@@ -3,12 +3,17 @@ import { logger } from './infra/logger.js';
 import { connectMongo, disconnectMongo } from './infra/mongo.js';
 import { configureGoogleAuth } from './infra/googleAuth.js';
 import { createSessionMiddleware } from './middleware/session.js';
+import { connectRedis, disconnectRedis } from './infra/redis.js';
+import { flushSentry, initSentry, reportError } from './infra/sentry.js';
 import { createApp } from './app.js';
 
 // Entry point: connect to what the app needs, start listening, and shut down cleanly.
 
 async function start() {
+  initSentry();
   await connectMongo(env.DATABASE_URI);
+  // Redis connects in the background; the server does not wait for it and runs without it.
+  connectRedis();
   logger.info({ database: env.DATABASE_KIND }, 'Using database');
 
   configureGoogleAuth();
@@ -22,7 +27,9 @@ async function start() {
   async function shutdown(signal) {
     logger.info({ signal }, 'Shutting down');
     server.close(async () => {
+      await disconnectRedis();
       await disconnectMongo();
+      await flushSentry();
       process.exit(0);
     });
     // If something hangs, do not wait forever.
@@ -32,7 +39,9 @@ async function start() {
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
-start().catch((error) => {
+start().catch(async (error) => {
   logger.fatal({ err: error }, 'Server failed to start');
+  reportError(error);
+  await flushSentry();
   process.exit(1);
 });

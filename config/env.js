@@ -29,6 +29,25 @@ const envSchema = z.object({
   // Only accounts on this domain may connect Gmail and Calendar (phase 06).
   WORKSPACE_DOMAIN: z.string().min(1).default('engenx.in'),
 
+  // File storage (AWS S3). Optional as a group: without them uploads are switched off.
+  AWS_S3_IAM_ACCESS_KEY_ID: z.string().min(1).optional(),
+  AWS_S3_IAM_SECRET_ACCESS_KEY: z.string().min(1).optional(),
+  AWS_REGION: z.string().min(1).optional(),
+  // Two buckets, used like the two databases: production, and everything else.
+  S3_PROD_BUCKET: z.string().min(1).optional(),
+  S3_DEV_BUCKET: z.string().min(1).optional(),
+
+  // Error tracking (Sentry). SENTRY_BACKEND is this server's DSN. SENTRY_CLIENT is the browser
+  // app's DSN: it is public by design and is handed to the client through /api/public/config.
+  SENTRY_BACKEND: z.url().optional(),
+  SENTRY_CLIENT: z.url().optional(),
+
+  // Redis: cache, rate-limit counters and queues. Optional: the app must run without it.
+  REDIS_URL: z
+    .string()
+    .regex(/^rediss?:\/\//, 'must start with redis:// or rediss://')
+    .optional(),
+
   // Used only by the seed script: the first CEO user.
   SEED_CEO_EMAIL: z.email().optional(),
 });
@@ -68,6 +87,8 @@ export function parseEnv(rawEnv) {
     // The one connection string the app uses. Nothing else should read MONGODB_URI directly.
     DATABASE_URI: useDevDatabase ? data.MONGODB_URI_DEV : data.MONGODB_URI,
     DATABASE_KIND: useDevDatabase ? 'development' : 'production',
+    // The one bucket the app uses: production in production, the development bucket otherwise.
+    S3_BUCKET: data.NODE_ENV === 'production' ? data.S3_PROD_BUCKET : data.S3_DEV_BUCKET,
   };
 }
 

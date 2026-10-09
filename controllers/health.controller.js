@@ -9,5 +9,6 @@ export function getLiveness(req, res) {
 // GET /api/health: can the app do its job? 503 tells the platform and the uptime monitor it cannot.
 export async function getReadiness(req, res) {
   const health = await getHealth();
-  res.status(health.status === 'ok' ? 200 : 503).json({ data: health });
+  // "degraded" (Redis away) still answers 200: the app works and must not be restarted for it.
+  res.status(health.status === 'down' ? 503 : 200).json({ data: health });
 }

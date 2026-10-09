@@ -1,4 +1,5 @@
 import { isAppError, notFound } from '../lib/errors.js';
+import { reportError } from '../infra/sentry.js';
 
 // Any /api path that matched no route ends here.
 export function apiNotFound(req, res, next) {
@@ -28,6 +29,7 @@ export function errorHandler(error, req, res, next) {
   }
 
   req.log?.error({ err: error }, 'Unhandled error');
+  reportError(error, { requestId: req.id, userId: req.user?._id, path: req.path });
   res.status(500).json({
     error: {
       code: 'INTERNAL_ERROR',

@@ -1,0 +1,7 @@
+{
+  "exec": "node --env-file-if-exists=.env index.js",
+  "watch": ["."],
+  "ext": "js,json",
+  "ignore": ["node_modules/", "tests/", "*.test.js"],
+  "delay": 300
+}
