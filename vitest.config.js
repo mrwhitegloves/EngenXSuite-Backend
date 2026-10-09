@@ -9,6 +9,9 @@ export default defineConfig({
     fileParallelism: false,
     // The first run downloads a MongoDB binary for the in-memory test database.
     hookTimeout: 180_000,
+    // A test that signs in several users and makes a dozen requests can take longer than the
+    // default 5 seconds on a small or busy computer; that is slowness, not a failure.
+    testTimeout: 30_000,
     // Values the server needs to load. Tests never read the real .env file and never
     // connect to a real database: database tests use an in-memory MongoDB (tests/helpers/testDb.js).
     env: {

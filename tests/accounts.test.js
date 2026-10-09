@@ -7,7 +7,8 @@ import { Account } from '../models/account.model.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
-import { runSeed } from '../seeds/seed.js';
+import { AccountStatus } from '../models/statusLists.model.js';
+import { runSeed, seedStatusLists } from '../seeds/seed.js';
 import { maskSensitive, registerAccountDeleteBlocker } from '../services/accounts.service.js';
 import { clearTestDb, startTestDb, stopTestDb } from './helpers/testDb.js';
 
@@ -19,6 +20,8 @@ let ceo;
 let manager;
 let agent;
 let otherAgent;
+// The seeded account statuses by key: statuses.prospect, statuses.customer, …
+let statuses;
 
 async function signedInAs(user) {
   const client = request.agent(app);
@@ -30,8 +33,17 @@ async function signedInAs(user) {
 }
 
 /** Put an account straight into the database, owned by `owner`. */
+// (The API gives real codes; these direct inserts use their own series so they never clash.)
+let testCode = 0;
 const makeAccount = (name, owner, extra = {}) =>
-  Account.create({ name, nameKey: toNameKey(name), ownerId: owner._id, ...extra });
+  Account.create({
+    name,
+    accountCode: `TEST-${(testCode += 1)}`,
+    nameKey: toNameKey(name),
+    ownerId: owner._id,
+    statusId: statuses.prospect._id,
+    ...extra,
+  });
 
 const namesOf = (response) => response.body.data.map((account) => account.name).sort();
 
@@ -44,6 +56,8 @@ afterAll(stopTestDb);
 beforeEach(async () => {
   await clearTestDb();
   await runSeed({ productName: 'P', companyName: 'C', workspaceDomain: 'engenx.in' });
+  await seedStatusLists();
+  statuses = Object.fromEntries((await AccountStatus.find().lean()).map((s) => [s.key, s]));
   const roles = Object.fromEntries((await Role.find()).map((role) => [role.name, role]));
   const makeUser = (email, name, roleName, extra = {}) =>
     User.create({
@@ -159,7 +173,8 @@ describe('who can see which account', () => {
       .data;
     expect(forManager.canAssign).toBe(true);
     expect(forManager.users).toHaveLength(4);
-    expect(forManager.statuses).toContain('prospect');
+    expect(forManager.statuses.map((status) => status.key)).toContain('prospect');
+    expect(forManager.statuses.find((status) => status.isDefault).name).toBe('Prospect');
     expect(JSON.stringify(forManager)).not.toContain('engenx.in'); // names only, no emails
   });
 });
@@ -181,7 +196,8 @@ describe('creating accounts', () => {
     expect(response.body.data).toMatchObject({
       name: 'Bharat Forge Ltd',
       website: 'https://bharatforge.com',
-      status: 'prospect',
+      accountCode: 'EGX-10001',
+      status: { key: 'prospect', name: 'Prospect' },
       source: 'manual',
       hq: { city: 'Pune' },
       owner: { id: String(agent._id), name: 'Asha Agent' },
@@ -274,7 +290,7 @@ describe('creating accounts', () => {
     const client = await signedInAs(ceo);
     const response = await client.post('/api/accounts').send({
       name: '',
-      status: 'unknown',
+      statusId: 'unknown',
       companySize: 'huge',
       annualRevenuePaise: 10.5,
       gstin: '123',
@@ -291,7 +307,7 @@ describe('creating accounts', () => {
       'gstin',
       'name',
       'pan',
-      'status',
+      'statusId',
       'website',
     ]);
     expect(await Account.countDocuments()).toBe(0);
@@ -316,13 +332,13 @@ describe('editing accounts', () => {
       industry: null,
       region: 'West',
       hq: { city: 'Mumbai' },
-      status: 'active',
+      statusId: String(statuses.active._id),
     });
     expect(response.status).toBe(200);
     expect(response.body.data).toMatchObject({
       industry: null,
       region: 'West',
-      status: 'active',
+      status: { key: 'active', name: 'Active' },
       hq: { city: 'Mumbai', state: 'Maharashtra' }, // state kept
     });
     const stored = await Account.findById(account._id).lean();
@@ -334,10 +350,11 @@ describe('editing accounts', () => {
       action: 'account.updated',
       oldValue: {
         industry: 'Forging',
-        status: 'prospect',
+        status: 'Prospect',
         hq: { city: 'Pune', state: 'Maharashtra' },
       },
-      newValue: { industry: null, region: 'West', status: 'active' },
+      // The status is recorded by name, so the log reads without a lookup.
+      newValue: { industry: null, region: 'West', status: 'Active' },
     });
   });
 
@@ -446,7 +463,7 @@ describe('listing accounts', () => {
     await makeAccount('Alpha Steel', ceo, {
       industry: 'Steel',
       region: 'West',
-      status: 'customer',
+      statusId: statuses.customer._id,
       hq: { city: 'Pune' },
     });
     await makeAccount('Beta Cement', agent, {
@@ -457,7 +474,7 @@ describe('listing accounts', () => {
     await makeAccount('Gamma Steel', agent, {
       industry: 'Steel',
       region: 'North',
-      status: 'active',
+      statusId: statuses.active._id,
     });
   });
 
@@ -471,7 +488,7 @@ describe('listing accounts', () => {
     expect(await names('sort=-name&pageSize=2&page=2')).toEqual(['Alpha Steel']);
     expect(await names('industry=Steel&sort=name')).toEqual(['Alpha Steel', 'Gamma Steel']);
     expect(await names('industry=Steel&region=North')).toEqual(['Gamma Steel']);
-    expect(await names('status=customer')).toEqual(['Alpha Steel']);
+    expect(await names(`statusId=${statuses.customer._id}`)).toEqual(['Alpha Steel']);
     expect(await names(`ownerId=${agent._id}&sort=name`)).toEqual(['Beta Cement', 'Gamma Steel']);
     expect(await names('search=steel&sort=name')).toEqual(['Alpha Steel', 'Gamma Steel']);
     expect(await names('search=delhi')).toEqual(['Beta Cement']);
@@ -479,8 +496,12 @@ describe('listing accounts', () => {
     expect(await names('range=custom&from=2020-01-01&to=2020-01-31')).toEqual([]);
 
     const row = (await client.get('/api/accounts?search=alpha')).body.data[0];
-    expect(row).toMatchObject({ city: 'Pune', owner: { name: 'Kunal CEO' }, status: 'customer' });
-    for (const bad of ['sort=gstin', 'status=nope', 'pageSize=500', 'ownerId=x']) {
+    expect(row).toMatchObject({
+      city: 'Pune',
+      owner: { name: 'Kunal CEO' },
+      status: { key: 'customer', name: 'Customer' },
+    });
+    for (const bad of ['sort=gstin', 'statusId=nope', 'pageSize=500', 'ownerId=x']) {
       expect((await client.get(`/api/accounts?${bad}`)).status, bad).toBe(400);
     }
   });

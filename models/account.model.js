@@ -5,7 +5,6 @@ import mongoose from 'mongoose';
 // "Account" here always means a company; people who sign in are "users".
 // Schema only: no methods (decision 0005).
 
-export const ACCOUNT_STATUSES = ['prospect', 'active', 'customer', 'dormant', 'lost', 'strategic'];
 export const COMPANY_SIZES = ['1-50', '51-200', '201-1000', '1001-5000', '5000+'];
 export const ACCOUNT_SOURCES = ['manual', 'meta_ads', 'website', 'email', 'import'];
 export const ACCOUNT_POTENTIALS = ['low', 'medium', 'high'];
@@ -26,12 +25,22 @@ const addressSchema = new mongoose.Schema(
 
 const accountSchema = new mongoose.Schema(
   {
+    // EGX-10001, EGX-10002, …: given once when the account is created (lib/sequence.js), never
+    // changed and never used again.
+    accountCode: { type: String, required: true, unique: true },
     name: { type: String, required: true, trim: true, maxlength: 200 },
     // The name in a comparable form (see lib/nameKey.js): finds the same company typed differently.
     nameKey: { type: String, required: true },
+    description: { type: String, trim: true, maxlength: 2000 },
     industry: { type: String, trim: true },
     companyType: { type: String, trim: true },
     website: { type: String, trim: true },
+    linkedinUrl: { type: String, trim: true },
+    // The company's own main number and general email (people's own are on their contact).
+    phone: { type: String, trim: true },
+    email: { type: String, trim: true, lowercase: true },
+    // The group company this one belongs to, if any.
+    parentAccountId: { type: ObjectId, ref: 'Account' },
     hq: { type: addressSchema, default: undefined },
     region: { type: String, trim: true },
     companySize: { type: String, enum: COMPANY_SIZES },
@@ -46,7 +55,9 @@ const accountSchema = new mongoose.Schema(
     ownerId: { type: ObjectId, ref: 'User', required: true },
     assignedUserIds: { type: [{ type: ObjectId, ref: 'User' }], default: [] },
 
-    status: { type: String, required: true, enum: ACCOUNT_STATUSES, default: 'prospect' },
+    // Where the company stands. The list is managed in Settings (models/statusLists.model.js);
+    // the account stores only the status's _id.
+    statusId: { type: ObjectId, ref: 'AccountStatus', required: true },
     tagIds: { type: [{ type: ObjectId, ref: 'Tag' }], default: [] },
 
     industrial: {
@@ -84,6 +95,21 @@ const accountSchema = new mongoose.Schema(
     },
 
     source: { type: String, enum: ACCOUNT_SOURCES, default: 'manual' },
+    // Names of the campaign, ad set, ad and form the account came from (ads and website leads).
+    sourceDetail: {
+      type: new mongoose.Schema(
+        {
+          campaign: { type: String, trim: true },
+          adSet: { type: String, trim: true },
+          ad: { type: String, trim: true },
+          form: { type: String, trim: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+    },
+    // The inbound lead that created this account. Written only by the leads module.
+    leadId: { type: ObjectId },
     importId: { type: ObjectId },
     // A saved copy of "when did anything last happen here"; only the activity service writes it.
     lastActivityAt: { type: Date },
@@ -98,7 +124,10 @@ const accountSchema = new mongoose.Schema(
 accountSchema.index({ nameKey: 1 });
 accountSchema.index({ ownerId: 1 });
 accountSchema.index({ assignedUserIds: 1 });
-accountSchema.index({ status: 1 });
+accountSchema.index({ statusId: 1 });
+accountSchema.index({ parentAccountId: 1 }, { sparse: true });
+accountSchema.index({ phone: 1 }, { sparse: true });
+accountSchema.index({ email: 1 }, { sparse: true });
 accountSchema.index({ tagIds: 1 });
 accountSchema.index({ industry: 1 });
 accountSchema.index({ region: 1 });

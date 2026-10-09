@@ -21,6 +21,37 @@ export const DEFAULT_PIPELINE_STAGES = [
   { key: 'lost', name: 'Lost', type: 'lost', probability: 0 },
 ];
 
+// Where a company stands. The first one is the default for a new account.
+export const DEFAULT_ACCOUNT_STATUSES = [
+  'Prospect',
+  'Active',
+  'Customer',
+  'Dormant',
+  'Lost',
+  'Strategic',
+];
+
+// Where a lead stands in day-to-day follow-up (the founder's list, decision 0012). It exists
+// side by side with the pipeline stage. The first one is the default for a new lead.
+export const DEFAULT_LEAD_STATUSES = [
+  'New Lead',
+  'Connected',
+  'Contact Attempt 1',
+  'Contacted',
+  'Meeting Scheduled',
+  'Demo Scheduled',
+  'Proposal Shared',
+  'Negotiation',
+  'Interested',
+  'Follow-up',
+  'Won',
+  'Lost',
+  'Future Opportunity',
+  'DNP',
+  'NATC',
+  'Not interested',
+];
+
 export const DEFAULT_SOLUTION_CATEGORIES = [
   'Digital Twin',
   'Machine Monitoring',

@@ -4,7 +4,13 @@ import { Settings } from '../models/settings.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
 import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { DEFAULT_ROLE_GRANTS } from '../constants/permissions.js';
-import { DEFAULT_PIPELINE_STAGES, DEFAULT_SOLUTION_CATEGORIES } from './defaults.js';
+import { AccountStatus, LeadStatus } from '../models/statusLists.model.js';
+import {
+  DEFAULT_ACCOUNT_STATUSES,
+  DEFAULT_LEAD_STATUSES,
+  DEFAULT_PIPELINE_STAGES,
+  DEFAULT_SOLUTION_CATEGORIES,
+} from './defaults.js';
 
 // Creates the data the app cannot start without: runSeed() makes the three roles, the settings
 // record and the first CEO user; seedStartingLists() makes the starting pipeline stages and
@@ -97,4 +103,34 @@ export async function seedStartingLists() {
   }
 
   return { stagesCreated, categoriesCreated };
+}
+
+/** "Contact Attempt 1" → "contact_attempt_1": the fixed identifier of a seeded status. */
+const statusKey = (name) =>
+  name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+
+/**
+ * The starting account statuses and lead statuses (managed in Settings → Statuses afterwards).
+ * Like the lists above, each is written only into an EMPTY collection. The first status of each
+ * list is its default. Safe to run any number of times.
+ * @returns {Promise<{ accountStatusesCreated: number, leadStatusesCreated: number }>}
+ */
+export async function seedStatusLists() {
+  const fill = async (model, names) => {
+    if ((await model.estimatedDocumentCount()) > 0) return 0;
+    const statuses = names.map((name, index) => ({
+      name,
+      key: statusKey(name),
+      order: (index + 1) * 10,
+      isDefault: index === 0,
+    }));
+    return (await model.insertMany(statuses)).length;
+  };
+  return {
+    accountStatusesCreated: await fill(AccountStatus, DEFAULT_ACCOUNT_STATUSES),
+    leadStatusesCreated: await fill(LeadStatus, DEFAULT_LEAD_STATUSES),
+  };
 }

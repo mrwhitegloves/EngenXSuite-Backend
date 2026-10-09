@@ -12,6 +12,8 @@ export const SOCKET_EVENTS = {
   permissionsChanged: 'permissions.changed',
   // An account (customer company) was added, changed or deleted.
   accountsChanged: 'accounts.changed',
+  // A status list managed in Settings changed (account statuses, lead statuses).
+  statusListsChanged: 'status-lists.changed',
   // The product name or company name changed.
   brandingChanged: 'branding.changed',
 };
