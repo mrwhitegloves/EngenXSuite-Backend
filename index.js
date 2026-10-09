@@ -11,6 +11,7 @@ import { JOB_HANDLERS } from './jobs/index.js';
 import { registerSchedules } from './jobs/schedules.js';
 import { startRealtime, stopRealtime } from './infra/realtime.js';
 import { loadRequestUser } from './services/auth.service.js';
+import { verifyTicket } from './lib/realtimeTicket.js';
 import { flushSentry, initSentry, reportError } from './infra/sentry.js';
 import { createApp } from './app.js';
 
@@ -31,9 +32,9 @@ async function start() {
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT }, 'Server listening');
   });
-  // Live updates share the HTTP server and the session of the REST API.
+  // Live updates share the HTTP server. A browser connects with a ticket from the API.
   startRealtime(server, {
-    sessionMiddleware,
+    verifyTicket,
     loadUser: loadRequestUser,
     allowedOrigins: [new URL(env.APP_URL).origin],
   });

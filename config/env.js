@@ -12,6 +12,12 @@ const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
   // Public address of the client. Used for redirects after login and for the OAuth callback URL.
   APP_URL: z.url().default('http://localhost:5173'),
+  // Public address of THIS server, when it differs from APP_URL (production: the Cloud Run
+  // address). The browser opens its live-update connection here. Not set: same address as the page.
+  REALTIME_URL: z.url().optional(),
+  // How many proxies sit between the browser and this server. It decides which address counts
+  // as the visitor's (rate limits). Cloud Run alone: 1. Through the client's host as well: 2.
+  TRUST_PROXY_HOPS: z.coerce.number().int().min(0).max(5).default(1),
   // First-run defaults only. The live product and company names live in the settings record.
   APP_NAME: z.string().min(1).default('EngenXSuite'),
   COMPANY_NAME: z.string().min(1).default('EngenX'),

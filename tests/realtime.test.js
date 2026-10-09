@@ -10,6 +10,7 @@ import { runSeed } from '../seeds/seed.js';
 import { loadRequestUser } from '../services/auth.service.js';
 import { emitToAll, emitToUser, startRealtime, stopRealtime } from '../infra/realtime.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
+import { TICKET_LIFETIME_SECONDS, createTicket, verifyTicket } from '../lib/realtimeTicket.js';
 import { clearTestDb, startTestDb, stopTestDb } from './helpers/testDb.js';
 
 // A real HTTP server on a free port with real sockets: the same wiring as index.js.
@@ -34,13 +35,22 @@ async function signIn(user) {
   return { client, cookie };
 }
 
-/** Open a socket; resolves with the socket once connected, rejects when the server refuses. */
-function openSocket(cookie, origin) {
+/** Ask the API for a connection ticket, as the browser does. null when the API refuses. */
+async function fetchTicket(cookie) {
+  const response = await request(baseUrl)
+    .get('/api/realtime/ticket')
+    .set(cookie ? { Cookie: cookie } : {});
+  return response.status === 200 ? response.body.data.ticket : null;
+}
+
+/** Connect with exactly this ticket (or none). */
+function connectWithTicket(ticket, origin) {
   const socket = connectSocket(baseUrl, {
     transports: ['websocket'],
     reconnection: false,
     forceNew: true,
-    extraHeaders: { ...(cookie ? { Cookie: cookie } : {}), ...(origin ? { Origin: origin } : {}) },
+    auth: ticket ? { ticket } : {},
+    extraHeaders: origin ? { Origin: origin } : {},
   });
   sockets.push(socket);
   socket.received = [];
@@ -49,6 +59,14 @@ function openSocket(cookie, origin) {
     socket.once('connect', () => resolve(socket));
     socket.once('connect_error', (error) => reject(error));
   });
+}
+
+/**
+ * Open a socket the way the browser does: with this session cookie, get a ticket from the API,
+ * then connect with it. Resolves with the socket, rejects when the server refuses.
+ */
+async function openSocket(cookie, origin) {
+  return connectWithTicket(await fetchTicket(cookie), origin);
 }
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -63,7 +81,7 @@ beforeAll(async () => {
   const sessionMiddleware = createSessionMiddleware();
   httpServer = createServer(createApp({ sessionMiddleware }));
   startRealtime(httpServer, {
-    sessionMiddleware,
+    verifyTicket,
     loadUser: loadRequestUser,
     allowedOrigins: ['https://client.example'],
   });
@@ -111,6 +129,52 @@ describe('live updates (Socket.IO)', () => {
     const { cookie } = await signIn(agent);
     const socket = await openSocket(cookie);
     expect(socket.connected).toBe(true);
+  });
+
+  it('a ticket is only given to a signed-in user, and names the place to connect to', async () => {
+    expect((await request(baseUrl).get('/api/realtime/ticket')).status).toBe(401);
+    const { client } = await signIn(agent);
+    const response = await client.get('/api/realtime/ticket');
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ url: null, expiresInSeconds: 60 });
+    expect(verifyTicket(response.body.data.ticket)).toBe(String(agent._id));
+  });
+
+  it('the session cookie alone does not open a connection: a ticket is needed', async () => {
+    const { cookie } = await signIn(agent);
+    const socket = connectSocket(baseUrl, {
+      transports: ['websocket'],
+      reconnection: false,
+      forceNew: true,
+      extraHeaders: { Cookie: cookie },
+    });
+    sockets.push(socket);
+    const error = await new Promise((resolve) => socket.once('connect_error', resolve));
+    expect(error.message).toBe('unauthorized');
+  });
+
+  it('refuses a forged, changed or expired ticket', async () => {
+    const good = createTicket(String(agent._id));
+    const [userId, expiresAt, signature] = good.split('.');
+    const longAgo = Date.now() - (TICKET_LIFETIME_SECONDS + 5) * 1000;
+
+    for (const ticket of [
+      `${otherAgent._id}.${expiresAt}.${signature}`, // another user's id with this signature
+      `${userId}.${Number(expiresAt) + 60_000}.${signature}`, // a later expiry
+      `${userId}.${expiresAt}.${'A'.repeat(signature.length)}`,
+      `${userId}.${expiresAt}`,
+      'not-a-ticket',
+      createTicket(String(agent._id), longAgo), // genuine but expired
+    ]) {
+      await expect(connectWithTicket(ticket), ticket.slice(0, 30)).rejects.toThrow('unauthorized');
+    }
+    expect((await connectWithTicket(good)).connected).toBe(true);
+  });
+
+  it('a genuine ticket of a user who was deactivated since is refused', async () => {
+    const ticket = createTicket(String(agent._id));
+    await User.updateOne({ _id: agent._id }, { $set: { status: 'deactivated' } });
+    await expect(connectWithTicket(ticket)).rejects.toThrow('unauthorized');
   });
 
   it("a page of another website cannot open a connection, even with the user's cookie", async () => {

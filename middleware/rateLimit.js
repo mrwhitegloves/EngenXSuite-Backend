@@ -49,6 +49,27 @@ export function createLoginLimiter({ limit = 5, windowMs = 15 * MINUTE_MS, skip 
   });
 }
 
+/**
+ * Sign-in attempts for one email from anywhere: 30 per hour.
+ * The limiter above depends on the visitor's address, and an attacker can come from many
+ * addresses (or fake the address when calling the server directly). This one does not: it caps
+ * password guessing against one account whatever the address. The price: someone hammering a
+ * colleague's email can lock that colleague out for up to an hour.
+ */
+export function createLoginPerEmailLimiter({ limit = 30, windowMs = 60 * MINUTE_MS, skip } = {}) {
+  return createLimiter({
+    limit,
+    windowMs,
+    skip,
+    name: 'login-email',
+    keyGenerator: (req) =>
+      `email:${String(req.body?.email ?? '')
+        .trim()
+        .toLowerCase()}`,
+    message: 'Too many sign-in attempts for this account. Please try again in an hour.',
+  });
+}
+
 /** Password resets from the sign-in page: 5 per 15 minutes per IP address and email. */
 export function createPasswordResetLimiter({ limit = 5, windowMs = 15 * MINUTE_MS, skip } = {}) {
   return createLimiter({

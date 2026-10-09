@@ -1,0 +1,23 @@
+# Never put secrets in the image. Production values come from Secret Manager.
+.env
+.env.*
+
+# Installed inside the image by npm ci.
+node_modules
+
+# Not needed to run the server.
+.git
+.github
+.husky
+.vscode
+tests
+coverage
+*.log
+*.md
+Dockerfile
+.dockerignore
+nodemon.json
+vitest.config.js
+eslint.config.js
+.prettierrc
+.prettierignore

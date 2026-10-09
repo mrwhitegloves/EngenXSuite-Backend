@@ -14,20 +14,25 @@ const userRoom = (userId) => `user:${userId}`;
 
 /**
  * Attach Socket.IO to the HTTP server.
- * A socket is accepted only with the same session cookie as the REST API, and only for a user
- * that is still active. Each socket joins one room: its own user's.
+ * A socket is accepted only with a valid ticket (lib/realtimeTicket.js, handed out by the API to
+ * a signed-in user) and only for a user that is still active. Each socket joins one room: its
+ * own user's.
  *
  * @param {import('node:http').Server} httpServer
- * @param {{ sessionMiddleware: Function, loadUser: (userId: string) => Promise<object|null>,
+ * @param {{ verifyTicket: (ticket: unknown) => string | null,
+ *           loadUser: (userId: string) => Promise<object|null>,
  *           allowedOrigins?: string[] }} options
+ *        verifyTicket: returns the user id of a genuine, unexpired ticket
  *        loadUser: the same function the REST API uses to load the signed-in user
  *        allowedOrigins: addresses of our own client, e.g. ["https://sales.example.com"]
  */
-export function startRealtime(httpServer, { sessionMiddleware, loadUser, allowedOrigins = [] }) {
+export function startRealtime(httpServer, { verifyTicket, loadUser, allowedOrigins = [] }) {
   // Server is the library's class; it is created once, here.
   io = new Server(httpServer, {
     serveClient: false,
-    // A page of another website must not open a connection with a signed-in user's cookie.
+    // Lets our client's pages talk to this address from another address (production).
+    cors: { origin: allowedOrigins },
+    // A page of another website must not open a connection at all.
     // Browsers always say which page opens a socket (Origin); no Origin means not a browser page.
     allowRequest: (request, callback) => {
       const origin = request.headers.origin;
@@ -37,12 +42,9 @@ export function startRealtime(httpServer, { sessionMiddleware, loadUser, allowed
     },
   });
 
-  // Reads the session cookie of the connection request, exactly as for a REST request.
-  io.engine.use(sessionMiddleware);
-
   io.use(async (socket, next) => {
     try {
-      const userId = socket.request.session?.userId;
+      const userId = verifyTicket(socket.handshake.auth?.ticket);
       const user = userId ? await loadUser(userId) : null;
       if (!user) return next(new Error('unauthorized'));
       socket.data.userId = String(user._id);
