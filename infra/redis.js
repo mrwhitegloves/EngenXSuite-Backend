@@ -48,6 +48,27 @@ export function getRedis() {
   return isReady ? redis : null;
 }
 
+/**
+ * A separate connection for the background-job library (BullMQ), which needs its own:
+ * a worker waits on Redis for the next job, and that would block the shared connection.
+ * Returns null when REDIS_URL is not set. The caller closes it with `.quit()`.
+ * @param {'producer' | 'worker'} kind
+ */
+export function createQueueConnection(kind) {
+  if (!env.REDIS_URL) return null;
+  const connection = new Redis(env.REDIS_URL, {
+    // BullMQ requires "never give up on a command" for workers. Adding a job (producer) must
+    // fail quickly instead, so a request never hangs while Redis is away.
+    maxRetriesPerRequest: kind === 'worker' ? null : 1,
+    enableOfflineQueue: kind === 'worker',
+    retryStrategy: (attempt) => Math.min(attempt * 500, 10_000),
+  });
+  connection.on('error', () => {
+    // The shared connection above already logs connection problems once.
+  });
+  return connection;
+}
+
 export async function disconnectRedis() {
   if (!redis) return;
   await redis.quit().catch(() => {});

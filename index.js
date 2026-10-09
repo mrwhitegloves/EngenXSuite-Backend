@@ -4,6 +4,9 @@ import { connectMongo, disconnectMongo } from './infra/mongo.js';
 import { configureGoogleAuth } from './infra/googleAuth.js';
 import { createSessionMiddleware } from './middleware/session.js';
 import { connectRedis, disconnectRedis } from './infra/redis.js';
+import { closeQueues } from './infra/queues.js';
+import { startWorkers, stopWorkers } from './infra/workers.js';
+import { JOB_HANDLERS } from './jobs/index.js';
 import { flushSentry, initSentry, reportError } from './infra/sentry.js';
 import { createApp } from './app.js';
 
@@ -21,12 +24,16 @@ async function start() {
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT }, 'Server listening');
   });
+  // Background jobs run inside this same process. Without Redis they are simply off.
+  startWorkers(JOB_HANDLERS);
 
   // Cloud Run sends SIGTERM before stopping an instance. Stop taking new requests,
   // let running ones finish, then close the database connection.
   async function shutdown(signal) {
     logger.info({ signal }, 'Shutting down');
     server.close(async () => {
+      await stopWorkers();
+      await closeQueues();
       await disconnectRedis();
       await disconnectMongo();
       await flushSentry();

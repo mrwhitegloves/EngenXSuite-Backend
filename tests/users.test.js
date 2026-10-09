@@ -205,10 +205,20 @@ describe('creating user accounts', () => {
       409,
     );
     expect((await client.post('/api/users').send(newUser({ password: 'short' }))).status).toBe(400);
+    expect((await client.post('/api/users').send(newUser({ password: '7chars!' }))).status).toBe(
+      400,
+    );
     const unknownRole = await client
       .post('/api/users')
       .send(newUser({ roleId: '0123456789abcdef01234567' }));
     expect(unknownRole.status).toBe(400);
+  });
+
+  it('accepts a password of exactly 8 characters, the minimum', async () => {
+    const client = await signedInAs(ceo);
+    const created = await client.post('/api/users').send(newUser({ password: '8chars!!' }));
+    expect(created.status).toBe(201);
+    expect((await login('new@engenx.in', '8chars!!')).status).toBe(200);
   });
 
   it("a manager's new user reports to that manager by default", async () => {

@@ -4,7 +4,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 // decision 0011). There is no hashing and no encryption. This file is the one place that
 // compares a typed password with the stored one.
 
-export const MIN_PASSWORD_LENGTH = 10;
+export const MIN_PASSWORD_LENGTH = 8;
 export const MAX_PASSWORD_LENGTH = 200;
 
 const digest = (text) => createHash('sha256').update(String(text), 'utf8').digest();
