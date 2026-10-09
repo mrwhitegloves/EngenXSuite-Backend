@@ -8,7 +8,6 @@ import { errorHandler } from '../middleware/errorHandler.js';
 import { AuditLog } from '../models/auditLog.model.js';
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
-import { buildPasswordFields, hashPassword } from '../infra/password.js';
 import { runSeed } from '../seeds/seed.js';
 import { clearTestDb, startTestDb, stopTestDb } from './helpers/testDb.js';
 
@@ -23,16 +22,18 @@ let manager;
 let agent;
 let otherAgent;
 
-async function makeUser(email, roleName, extra = {}) {
+function makeUser(email, roleName, extra = {}) {
   return User.create({
     email,
     name: email.split('@')[0],
     roleId: roles[roleName]._id,
     status: 'active',
-    ...(await buildPasswordFields(PASSWORD)),
+    password: PASSWORD,
     ...extra,
   });
 }
+
+const login = (email, password) => request(app).post('/api/auth/login').send({ email, password });
 
 /** A browser-like client that is signed in as this user. */
 async function signedInAs(user, password = PASSWORD) {
@@ -59,22 +60,20 @@ beforeEach(async () => {
 });
 
 describe('email + password sign-in', () => {
-  it('signs in with the right password and returns the user without any secret', async () => {
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'CEO@engenx.in', password: PASSWORD });
+  it('signs in with the right password and returns the user without the password', async () => {
+    const response = await login('CEO@engenx.in', PASSWORD);
     expect(response.status).toBe(200);
     expect(response.body.data).toMatchObject({ email: 'ceo@engenx.in', role: { name: 'CEO' } });
-    expect(JSON.stringify(response.body)).not.toMatch(/passwordHash|\$2[aby]\$/);
+    expect(JSON.stringify(response.body)).not.toContain(PASSWORD);
     expect(response.headers['set-cookie'][0]).toMatch(/HttpOnly/);
   });
 
   it('gives the same answer for a wrong password, an unknown email and a deactivated user', async () => {
     await User.updateOne({ _id: otherAgent._id }, { $set: { status: 'deactivated' } });
     const attempts = await Promise.all([
-      request(app).post('/api/auth/login').send({ email: ceo.email, password: 'wrong-password' }),
-      request(app).post('/api/auth/login').send({ email: 'nobody@x.com', password: PASSWORD }),
-      request(app).post('/api/auth/login').send({ email: otherAgent.email, password: PASSWORD }),
+      login(ceo.email, 'wrong-password'),
+      login('nobody@x.com', PASSWORD),
+      login(otherAgent.email, PASSWORD),
     ]);
     for (const attempt of attempts) {
       expect(attempt.status).toBe(401);
@@ -83,12 +82,15 @@ describe('email + password sign-in', () => {
     }
   });
 
-  it('refuses an account that has no password (for example one that only uses Google)', async () => {
+  it('refuses an account that has no password, and an empty password never matches', async () => {
     await User.create({ email: 'g@engenx.in', name: 'G', roleId: roles.CEO._id, status: 'active' });
-    const response = await request(app)
-      .post('/api/auth/login')
-      .send({ email: 'g@engenx.in', password: PASSWORD });
-    expect(response.status).toBe(401);
+    expect((await login('g@engenx.in', PASSWORD)).status).toBe(401);
+    expect((await login('g@engenx.in', '')).status).toBe(400);
+  });
+
+  it('the password is case-sensitive and must match exactly', async () => {
+    expect((await login(ceo.email, PASSWORD.toUpperCase())).status).toBe(401);
+    expect((await login(ceo.email, `${PASSWORD} `)).status).toBe(401);
   });
 
   it('rejects a malformed request with 400', async () => {
@@ -120,6 +122,58 @@ describe('sign-in rate limit', () => {
   });
 });
 
+describe('password storage (decision 0011)', () => {
+  it('stores the password exactly as typed, with no hash and no encryption', async () => {
+    const client = await signedInAs(ceo);
+    await client.post('/api/users').send({
+      name: 'Plain',
+      email: 'plain@engenx.in',
+      password: 'My Plain Pass 123',
+      roleId: String(roles['Sales Agent']._id),
+    });
+    const stored = await User.findOne({ email: 'plain@engenx.in' }).select('+password').lean();
+    expect(stored.password).toBe('My Plain Pass 123');
+    expect(Object.keys(stored)).not.toContain('passwordHash');
+    expect(Object.keys(stored)).not.toContain('passwordEnc');
+  });
+});
+
+describe('forgot password from the sign-in page (decision 0011)', () => {
+  const reset = (email, newPassword) =>
+    request(app).post('/api/auth/reset-password').send({ email, newPassword });
+
+  it('sets a new password for an existing email without the old password or any email', async () => {
+    const response = await reset('Agent@Engenx.in', NEW_PASSWORD);
+    expect(response.status).toBe(200);
+    expect((await login(agent.email, PASSWORD)).status).toBe(401);
+    expect((await login(agent.email, NEW_PASSWORD)).status).toBe(200);
+  });
+
+  it('refuses an email that is not a user, and creates nobody', async () => {
+    const response = await reset('nobody@example.com', NEW_PASSWORD);
+    expect(response.status).toBe(404);
+    expect(await User.countDocuments()).toBe(4);
+  });
+
+  it('refuses a deactivated user and a password that is too short', async () => {
+    await User.updateOne({ _id: otherAgent._id }, { $set: { status: 'deactivated' } });
+    expect((await reset(otherAgent.email, NEW_PASSWORD)).status).toBe(404);
+    expect((await reset(agent.email, 'short')).status).toBe(400);
+    expect((await login(agent.email, PASSWORD)).status).toBe(200); // unchanged
+  });
+
+  it('signs the user out everywhere and writes an audit entry without the password', async () => {
+    const browser = await signedInAs(agent);
+    await reset(agent.email, NEW_PASSWORD);
+    expect((await browser.get('/api/auth/me')).status).toBe(401);
+
+    const entries = await AuditLog.find({ action: 'user.password_reset_from_sign_in_page' }).lean();
+    expect(entries).toHaveLength(1);
+    expect(String(entries[0].entityId)).toBe(String(agent._id));
+    expect(JSON.stringify(entries)).not.toContain(NEW_PASSWORD);
+  });
+});
+
 describe('creating user accounts', () => {
   const newUser = (overrides = {}) => ({
     name: 'New Person',
@@ -129,30 +183,25 @@ describe('creating user accounts', () => {
     ...overrides,
   });
 
-  it('the CEO creates an account; the new user can sign in and must choose a password', async () => {
+  it('the CEO creates an account and the new user signs in straight away', async () => {
     const client = await signedInAs(ceo);
-    const created = await client.post('/api/users').send(newUser({ phone: '+919876543210' }));
+    const created = await client
+      .post('/api/users')
+      .send(newUser({ phone: '+919876543210', avatarUrl: 'https://example.com/a.png' }));
     expect(created.status).toBe(201);
     expect(created.body.data).toMatchObject({
       email: 'new@engenx.in',
       status: 'active',
-      mustChangePassword: true,
+      avatarUrl: 'https://example.com/a.png',
       role: { name: 'Sales Agent' },
     });
-    expect(JSON.stringify(created.body)).not.toMatch(/password"|passwordHash/);
+    expect(JSON.stringify(created.body)).not.toContain(PASSWORD);
 
-    const stored = await User.findOne({ email: 'new@engenx.in' }).select('+passwordHash');
-    expect(stored.passwordHash).toMatch(/^\$2[aby]\$12\$/);
-    expect(stored.passwordHash).not.toContain(PASSWORD);
-
-    const newClient = request.agent(app);
-    const login = await newClient
-      .post('/api/auth/login')
-      .send({ email: 'new@engenx.in', password: PASSWORD });
-    expect(login.body.data.mustChangePassword).toBe(true);
+    const signedIn = await login('new@engenx.in', PASSWORD);
+    expect(signedIn.status).toBe(200);
   });
 
-  it('rejects a duplicate email, a short password and an unknown account type', async () => {
+  it('rejects a duplicate email, a short password, an unknown account type and a non-https picture', async () => {
     const client = await signedInAs(ceo);
     expect((await client.post('/api/users').send(newUser({ email: agent.email }))).status).toBe(
       409,
@@ -162,11 +211,15 @@ describe('creating user accounts', () => {
       .post('/api/users')
       .send(newUser({ roleId: '0123456789abcdef01234567' }));
     expect(unknownRole.status).toBe(400);
+    const badPicture = await client
+      .post('/api/users')
+      .send(newUser({ avatarUrl: 'javascript:alert(1)' }));
+    expect(badPicture.status).toBe(400);
   });
 
-  it("a manager's new user always reports to that manager", async () => {
+  it("a manager's new user reports to that manager by default", async () => {
     const client = await signedInAs(manager);
-    const created = await client.post('/api/users').send(newUser({ managerId: String(ceo._id) })); // tries to place them under someone else
+    const created = await client.post('/api/users').send(newUser());
     expect(created.status).toBe(201);
     expect(created.body.data.managerId).toBe(String(manager._id));
   });
@@ -189,9 +242,10 @@ describe('creating user accounts', () => {
       'Sales Agent',
       'Sales Manager',
     ]);
+    expect(forCeo.body.data.canLeaveManagerEmpty).toBe(true);
     const forManager = await (await signedInAs(manager)).get('/api/users/form-options');
     expect(forManager.body.data.roles.map((role) => role.name)).toEqual(['Sales Agent']);
-    expect(forManager.body.data.canChooseManager).toBe(false);
+    expect(forManager.body.data.canLeaveManagerEmpty).toBe(false);
   });
 
   it('a Sales Agent cannot reach any users endpoint', async () => {
@@ -202,15 +256,17 @@ describe('creating user accounts', () => {
     expect((await client.patch(`/api/users/${otherAgent._id}`).send({ name: 'X' })).status).toBe(
       403,
     );
+    expect((await client.get(`/api/users/${otherAgent._id}/password`)).status).toBe(403);
   });
 
   it('nobody reaches users endpoints without signing in', async () => {
     expect((await request(app).get('/api/users')).status).toBe(401);
     expect((await request(app).post('/api/users').send(newUser())).status).toBe(401);
+    expect((await request(app).get(`/api/users/${agent._id}/password`)).status).toBe(401);
   });
 });
 
-describe('listing and managing users', () => {
+describe('listing users', () => {
   it('the CEO sees everyone; a manager sees only their team and themselves', async () => {
     const all = await (await signedInAs(ceo)).get('/api/users');
     expect(all.body.meta.total).toBe(4);
@@ -222,56 +278,128 @@ describe('listing and managing users', () => {
     ]);
   });
 
-  it('search and filters stay inside what the person may see', async () => {
-    const client = await signedInAs(manager);
-    const found = await client.get('/api/users?search=other');
+  it('search stays inside what the person may see', async () => {
+    const found = await (await signedInAs(manager)).get('/api/users?search=other');
     expect(found.body.data).toHaveLength(0);
   });
 
-  it('a manager gets 404 when editing or resetting a user outside their team', async () => {
+  it('the list never contains a password', async () => {
+    const list = await (await signedInAs(ceo)).get('/api/users');
+    expect(JSON.stringify(list.body)).not.toContain(PASSWORD);
+    expect(JSON.stringify(list.body)).not.toMatch(/"password"/);
+  });
+});
+
+describe('editing users (decision 0011)', () => {
+  it('the CEO can change every field of a user', async () => {
+    const client = await signedInAs(ceo);
+    const response = await client.patch(`/api/users/${agent._id}`).send({
+      name: 'Renamed Agent',
+      email: 'Renamed@Gmail.com',
+      password: NEW_PASSWORD,
+      roleId: String(roles['Sales Manager']._id),
+      managerId: String(ceo._id),
+      phone: '+919812345678',
+      avatarUrl: 'https://example.com/new.png',
+    });
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({
+      name: 'Renamed Agent',
+      email: 'renamed@gmail.com',
+      phone: '+919812345678',
+      avatarUrl: 'https://example.com/new.png',
+      managerId: String(ceo._id),
+      role: { name: 'Sales Manager' },
+    });
+    expect(JSON.stringify(response.body)).not.toContain(NEW_PASSWORD);
+
+    // The old email and old password no longer work; the new ones do.
+    expect((await login('agent@engenx.in', PASSWORD)).status).toBe(401);
+    expect((await login('renamed@gmail.com', NEW_PASSWORD)).status).toBe(200);
+    const stored = await User.findById(agent._id).lean();
+    expect(stored.isWorkspaceAccount).toBe(false); // recalculated from the new email
+  });
+
+  it('changing the email forgets the old Google link', async () => {
+    await User.updateOne({ _id: agent._id }, { $set: { googleId: 'g-123' } });
+    await (await signedInAs(ceo)).patch(`/api/users/${agent._id}`).send({ email: 'x@engenx.in' });
+    expect((await User.findById(agent._id).lean()).googleId).toBeUndefined();
+  });
+
+  it('refuses an email that another user already has', async () => {
+    const response = await (
+      await signedInAs(ceo)
+    )
+      .patch(`/api/users/${agent._id}`)
+      .send({ email: otherAgent.email });
+    expect(response.status).toBe(409);
+  });
+
+  it("a password changed by an administrator signs that user out; the user's own session rule is separate", async () => {
+    const agentBrowser = await signedInAs(agent);
+    await (
+      await signedInAs(manager)
+    )
+      .patch(`/api/users/${agent._id}`)
+      .send({ password: NEW_PASSWORD });
+    expect((await agentBrowser.get('/api/auth/me')).status).toBe(401);
+    expect((await login(agent.email, NEW_PASSWORD)).status).toBe(200);
+  });
+
+  it('a manager edits their own team, including moving an agent to another manager', async () => {
+    const client = await signedInAs(manager);
+    const renamed = await client.patch(`/api/users/${agent._id}`).send({ name: 'Team Member' });
+    expect(renamed.status).toBe(200);
+
+    const moved = await client
+      .patch(`/api/users/${agent._id}`)
+      .send({ managerId: String(ceo._id) });
+    expect(moved.status).toBe(200);
+    expect(moved.body.data.managerId).toBe(String(ceo._id));
+    // The agent now reports to someone else, so this manager no longer sees or edits them.
+    expect((await client.patch(`/api/users/${agent._id}`).send({ name: 'Back' })).status).toBe(404);
+  });
+
+  it('a manager gets 404 for users outside their team and cannot promote to manager', async () => {
     const client = await signedInAs(manager);
     expect((await client.patch(`/api/users/${otherAgent._id}`).send({ name: 'X' })).status).toBe(
       404,
     );
-    const reset = await client
-      .post(`/api/users/${otherAgent._id}/reset-password`)
-      .send({ password: NEW_PASSWORD });
-    expect(reset.status).toBe(404);
     expect((await client.patch(`/api/users/${ceo._id}`).send({ name: 'X' })).status).toBe(404);
-  });
-
-  it('a manager cannot promote a team member to manager', async () => {
-    const client = await signedInAs(manager);
-    const response = await client
+    expect((await client.patch(`/api/users/${manager._id}`).send({ name: 'Me' })).status).toBe(404);
+    const promote = await client
       .patch(`/api/users/${agent._id}`)
       .send({ roleId: String(roles['Sales Manager']._id) });
-    expect(response.status).toBe(403);
+    expect(promote.status).toBe(403);
+    const noManager = await client.patch(`/api/users/${agent._id}`).send({ managerId: null });
+    expect(noManager.status).toBe(400);
   });
 
-  it('deactivating a user signs them out at once and blocks sign-in', async () => {
-    const agentClient = await signedInAs(agent);
-    expect((await agentClient.get('/api/auth/me')).status).toBe(200);
-
-    const ceoClient = await signedInAs(ceo);
-    const response = await ceoClient
-      .patch(`/api/users/${agent._id}`)
-      .send({ status: 'deactivated' });
-    expect(response.body.data.status).toBe('deactivated');
-
-    expect((await agentClient.get('/api/auth/me')).status).toBe(401);
-    const login = await request(app)
-      .post('/api/auth/login')
-      .send({ email: agent.email, password: PASSWORD });
-    expect(login.status).toBe(401);
-  });
-
-  it('nobody can deactivate themselves, and the last administrator cannot be removed', async () => {
+  it('the CEO can edit their own account but not deactivate it', async () => {
     const client = await signedInAs(ceo);
+    const response = await client
+      .patch(`/api/users/${ceo._id}`)
+      .send({ name: 'The Boss', password: NEW_PASSWORD });
+    expect(response.status).toBe(200);
+    expect((await client.get('/api/auth/me')).status).toBe(200); // own session is kept
     expect(
       (await client.patch(`/api/users/${ceo._id}`).send({ status: 'deactivated' })).status,
     ).toBe(409);
+  });
 
-    // A second CEO exists, then tries to demote the first while being the only other admin.
+  it('deactivating a user signs them out at once and blocks sign-in; activating restores it', async () => {
+    const agentClient = await signedInAs(agent);
+    const ceoClient = await signedInAs(ceo);
+    const off = await ceoClient.patch(`/api/users/${agent._id}`).send({ status: 'deactivated' });
+    expect(off.body.data.status).toBe('deactivated');
+    expect((await agentClient.get('/api/auth/me')).status).toBe(401);
+    expect((await login(agent.email, PASSWORD)).status).toBe(401);
+
+    await ceoClient.patch(`/api/users/${agent._id}`).send({ status: 'active' });
+    expect((await login(agent.email, PASSWORD)).status).toBe(200);
+  });
+
+  it('the last administrator cannot be demoted', async () => {
     const second = await makeUser('ceo2@engenx.in', 'CEO');
     const secondClient = await signedInAs(second);
     const demoteFirst = await secondClient
@@ -286,91 +414,10 @@ describe('listing and managing users', () => {
   });
 });
 
-describe('passwords', () => {
-  it('a user who must change their password can do nothing else until they do', async () => {
-    await User.updateOne({ _id: manager._id }, { $set: { mustChangePassword: true } });
-    const client = await signedInAs(manager);
-
-    const blocked = await client.get('/api/users');
-    expect(blocked.status).toBe(403);
-    expect(blocked.body.error.code).toBe('PASSWORD_CHANGE_REQUIRED');
-    expect((await client.get('/api/auth/me')).body.data.mustChangePassword).toBe(true);
-
-    const changed = await client
-      .post('/api/auth/password')
-      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
-    expect(changed.status).toBe(200);
-    expect(changed.body.data.mustChangePassword).toBe(false);
-    expect((await client.get('/api/users')).status).toBe(200);
-  });
-
-  it('changing a password needs the current one and ends the other sessions', async () => {
-    const here = await signedInAs(agent);
-    const elsewhere = await signedInAs(agent);
-
-    const wrong = await here
-      .post('/api/auth/password')
-      .send({ currentPassword: 'not-my-password', newPassword: NEW_PASSWORD });
-    expect(wrong.status).toBe(400);
-
-    const ok = await here
-      .post('/api/auth/password')
-      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
-    expect(ok.status).toBe(200);
-
-    expect((await here.get('/api/auth/me')).status).toBe(200); // this browser stays signed in
-    expect((await elsewhere.get('/api/auth/me')).status).toBe(401); // the other one is signed out
-
-    const oldPassword = await request(app)
-      .post('/api/auth/login')
-      .send({ email: agent.email, password: PASSWORD });
-    expect(oldPassword.status).toBe(401);
-    await signedInAs(agent, NEW_PASSWORD);
-  });
-
-  it('a reset by the manager signs the user out and forces a new password', async () => {
-    const agentClient = await signedInAs(agent);
-    const managerClient = await signedInAs(manager);
-
-    const reset = await managerClient
-      .post(`/api/users/${agent._id}/reset-password`)
-      .send({ password: NEW_PASSWORD });
-    expect(reset.status).toBe(200);
-
-    expect((await agentClient.get('/api/auth/me')).status).toBe(401);
-    const login = await request(app)
-      .post('/api/auth/login')
-      .send({ email: agent.email, password: NEW_PASSWORD });
-    expect(login.body.data.mustChangePassword).toBe(true);
-  });
-
-  it('the audit log records who did what and never contains a password', async () => {
-    const client = await signedInAs(ceo);
-    await client.post('/api/users').send({
-      name: 'Audited',
-      email: 'audited@engenx.in',
-      password: PASSWORD,
-      roleId: String(roles['Sales Agent']._id),
-    });
-    await client.post(`/api/users/${agent._id}/reset-password`).send({ password: NEW_PASSWORD });
-
-    const entries = await AuditLog.find().lean();
-    expect(entries.map((entry) => entry.action).sort()).toEqual([
-      'user.created',
-      'user.password_reset',
-    ]);
-    expect(String(entries[0].userId)).toBe(String(ceo._id));
-    const everything = JSON.stringify(entries);
-    expect(everything).not.toContain(PASSWORD);
-    expect(everything).not.toContain(NEW_PASSWORD);
-    expect(everything).not.toMatch(/\$2[aby]\$/);
-  });
-});
-
-describe('viewing stored passwords (decision 0010)', () => {
+describe('viewing passwords', () => {
   const view = (client, user) => client.get(`/api/users/${user._id}/password`);
 
-  it('the CEO sees the real password of any user; the response is not cacheable', async () => {
+  it('the CEO sees the password of any user; the response is not cacheable', async () => {
     const response = await view(await signedInAs(ceo), otherAgent);
     expect(response.status).toBe(200);
     expect(response.body.data).toEqual({ password: PASSWORD, available: true });
@@ -384,55 +431,50 @@ describe('viewing stored passwords (decision 0010)', () => {
     expect((await view(client, ceo)).status).toBe(404);
   });
 
-  it('a Sales Agent cannot view any password, and nobody can without signing in', async () => {
-    expect((await view(await signedInAs(agent), otherAgent)).status).toBe(403);
-    expect((await view(await signedInAs(agent), agent)).status).toBe(403);
-    expect((await view(request(app), agent)).status).toBe(401);
-  });
-
-  it('shows the password the user chose themselves after they change it', async () => {
-    const agentClient = await signedInAs(agent);
-    await agentClient
-      .post('/api/auth/password')
-      .send({ currentPassword: PASSWORD, newPassword: NEW_PASSWORD });
+  it('shows the password the user set themselves from the sign-in page', async () => {
+    await request(app)
+      .post('/api/auth/reset-password')
+      .send({ email: agent.email, newPassword: NEW_PASSWORD });
     const response = await view(await signedInAs(ceo), agent);
     expect(response.body.data.password).toBe(NEW_PASSWORD);
   });
 
-  it('the list of users never contains a password in any form', async () => {
-    const list = await (await signedInAs(ceo)).get('/api/users');
-    const text = JSON.stringify(list.body);
-    expect(text).not.toContain(PASSWORD);
-    expect(text).not.toMatch(/passwordEnc|passwordHash|v1:/);
-  });
-
-  it('is stored encrypted, not as readable text', async () => {
-    const stored = await User.findById(agent._id).select('+passwordEnc +passwordHash').lean();
-    expect(stored.passwordEnc).toMatch(/^v1:/);
-    expect(stored.passwordEnc).not.toContain(PASSWORD);
-    // Encrypting the same password twice gives different stored values.
-    const again = await buildPasswordFields(PASSWORD);
-    expect(again.passwordEnc).not.toBe(stored.passwordEnc);
-  });
-
-  it('says "not available" for a password set before readable copies were stored', async () => {
-    const legacy = await User.create({
-      email: 'legacy@engenx.in',
-      name: 'Legacy',
+  it('says "not available" for a user without a password', async () => {
+    const noPassword = await User.create({
+      email: 'google-only@engenx.in',
+      name: 'Google Only',
       roleId: roles['Sales Agent']._id,
       status: 'active',
-      passwordHash: await hashPassword(PASSWORD),
     });
-    const response = await view(await signedInAs(ceo), legacy);
+    const response = await view(await signedInAs(ceo), noPassword);
     expect(response.body.data).toEqual({ password: null, available: false });
   });
+});
 
-  it('every view is written to the audit log, without the password', async () => {
-    await view(await signedInAs(manager), agent);
-    const entries = await AuditLog.find({ action: 'user.password_viewed' }).lean();
-    expect(entries).toHaveLength(1);
-    expect(String(entries[0].userId)).toBe(String(manager._id));
-    expect(String(entries[0].entityId)).toBe(String(agent._id));
-    expect(JSON.stringify(entries)).not.toContain(PASSWORD);
+describe('audit log', () => {
+  it('records who did what and never contains a password', async () => {
+    const client = await signedInAs(ceo);
+    await client.post('/api/users').send({
+      name: 'Audited',
+      email: 'audited@engenx.in',
+      password: PASSWORD,
+      roleId: String(roles['Sales Agent']._id),
+    });
+    await client
+      .patch(`/api/users/${agent._id}`)
+      .send({ name: 'New Name', password: NEW_PASSWORD });
+    await client.get(`/api/users/${agent._id}/password`);
+
+    const entries = await AuditLog.find().sort({ at: 1 }).lean();
+    expect(entries.map((entry) => entry.action).sort()).toEqual([
+      'user.created',
+      'user.password_changed_by_admin',
+      'user.password_viewed',
+      'user.updated',
+    ]);
+    expect(entries.every((entry) => String(entry.userId) === String(ceo._id))).toBe(true);
+    const everything = JSON.stringify(entries);
+    expect(everything).not.toContain(PASSWORD);
+    expect(everything).not.toContain(NEW_PASSWORD);
   });
 });

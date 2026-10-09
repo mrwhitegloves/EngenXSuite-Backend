@@ -29,19 +29,6 @@ const envSchema = z.object({
   // Only accounts on this domain may connect Gmail and Calendar (phase 06).
   WORKSPACE_DOMAIN: z.string().min(1).default('engenx.in'),
 
-  // Encrypts values that must be read back later (stored passwords, integration tokens).
-  // 32 random bytes, base64. Never stored in the database.
-  ENCRYPTION_KEY: z
-    .string()
-    .refine((value) => Buffer.from(value, 'base64').length === 32, 'must be 32 bytes in base64'),
-
-  // Email sending (password reset). Optional: without SMTP_USER and SMTP_PASS no email is sent.
-  SMTP_HOST: z.string().min(1).default('smtp.gmail.com'),
-  SMTP_PORT: z.coerce.number().int().min(1).max(65535).default(465),
-  SMTP_USER: z.string().optional(),
-  SMTP_PASS: z.string().optional(),
-  MAIL_FROM: z.string().optional(),
-
   // Used only by the seed script: the first CEO user.
   SEED_CEO_EMAIL: z.email().optional(),
 });

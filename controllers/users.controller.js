@@ -3,7 +3,6 @@ import {
   getUserFormOptions,
   getUserPassword,
   listUsers,
-  resetUserPassword,
   updateUser,
 } from '../services/users.service.js';
 import { sendCreated, sendList, sendOk } from '../lib/respond.js';
@@ -19,13 +18,14 @@ export async function getFormOptions(req, res) {
   sendOk(res, await getUserFormOptions(req.user));
 }
 
-// POST /api/users: create a user account with a first password.
+// POST /api/users: create a user account with its password.
 export async function postUser(req, res) {
   const user = await createUser(req.user, req.validated.body, { requestId: req.id });
   sendCreated(res, user);
 }
 
-// PATCH /api/users/:id: change name, phone, account type, manager, or activate / deactivate.
+// PATCH /api/users/:id: change name, login email, password, account type, manager, phone,
+// picture, or activate / deactivate.
 export async function patchUser(req, res) {
   const user = await updateUser(req.user, req.validated.params.id, req.validated.body, {
     requestId: req.id,
@@ -33,17 +33,9 @@ export async function patchUser(req, res) {
   sendOk(res, user);
 }
 
-// GET /api/users/:id/password: the user's real password, for the CEO or that user's manager.
+// GET /api/users/:id/password: the user's password, for the CEO or that user's manager.
 // The response must never be stored by a browser or a proxy.
 export async function getPassword(req, res) {
   res.set('Cache-Control', 'no-store');
   sendOk(res, await getUserPassword(req.user, req.validated.params.id, { requestId: req.id }));
-}
-
-// POST /api/users/:id/reset-password: set a new first password for someone else.
-export async function postResetPassword(req, res) {
-  await resetUserPassword(req.user, req.validated.params.id, req.validated.body.password, {
-    requestId: req.id,
-  });
-  sendOk(res, { reset: true });
 }

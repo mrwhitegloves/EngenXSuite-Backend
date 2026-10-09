@@ -1,59 +1,24 @@
-import bcrypt from 'bcryptjs';
-import { decrypt, encrypt } from './crypto.js';
+import { createHash, timingSafeEqual } from 'node:crypto';
 
-// Everything about passwords lives in this file. Nothing else hashes, compares, encrypts or
-// decrypts a password, and no password is ever logged.
-//
-// Two copies are stored for each password (decision 0010):
-//   passwordHash  a one-way bcrypt hash. This is what sign-in checks.
-//   passwordEnc   an AES-256-GCM encrypted copy, so the CEO and the user's manager can view it.
+// Passwords are stored exactly as typed, in the `password` field of a user (founder and CEO
+// decision 0011). There is no hashing and no encryption. This file is the one place that
+// compares a typed password with the stored one.
 
-// Work factor: each +1 doubles the time to check one guess. 12 is roughly a quarter of a second
-// per attempt on current hardware, slow for an attacker and unnoticeable for a user.
-const COST = 12;
-
-// bcrypt only reads the first 72 bytes of a password. Longer ones are refused by the validation
-// schema, so two different long passwords can never be treated as the same.
-export const MAX_PASSWORD_BYTES = 72;
 export const MIN_PASSWORD_LENGTH = 10;
+export const MAX_PASSWORD_LENGTH = 200;
 
-/** @param {string} password @returns {Promise<string>} */
-export function hashPassword(password) {
-  return bcrypt.hash(password, COST);
-}
+const digest = (text) => createHash('sha256').update(String(text), 'utf8').digest();
 
 /**
- * The fields to store on a user whenever their password is set or changed.
- * Every place that sets a password uses this, so the two copies can never disagree.
- * @param {string} password
+ * Is the typed password the stored one?
+ * The two values are compared through fixed-length digests in constant time, so the time the
+ * check takes does not reveal how many leading characters were right. (Nothing is stored hashed;
+ * the digests exist only for this comparison.)
+ * @param {string} typed
+ * @param {string | null | undefined} stored  Missing when the user has no password set
+ * @returns {boolean}
  */
-export async function buildPasswordFields(password) {
-  return {
-    passwordHash: await hashPassword(password),
-    passwordEnc: encrypt(password),
-    passwordChangedAt: new Date(),
-  };
-}
-
-/**
- * The readable password for an administrator to view.
- * @param {string | null | undefined} passwordEnc
- * @returns {string | null} null when no readable copy exists (password set before decision 0010)
- */
-export function readStoredPassword(passwordEnc) {
-  return decrypt(passwordEnc);
-}
-
-// A valid hash of a random value. Used when the email is unknown, so "no such user" takes the
-// same time as "wrong password" and timing cannot reveal which emails exist.
-const DUMMY_HASH = bcrypt.hashSync('not-a-real-password-placeholder', COST);
-
-/**
- * @param {string} password
- * @param {string | null | undefined} passwordHash  Missing when the user has no password set
- * @returns {Promise<boolean>}
- */
-export async function verifyPassword(password, passwordHash) {
-  const matches = await bcrypt.compare(password, passwordHash || DUMMY_HASH);
-  return Boolean(passwordHash) && matches;
+export function passwordsMatch(typed, stored) {
+  const equal = timingSafeEqual(digest(typed), digest(stored ?? ''));
+  return Boolean(stored) && equal;
 }

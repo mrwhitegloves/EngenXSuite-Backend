@@ -16,14 +16,12 @@
     "set-password": "node --env-file-if-exists=.env seeds/setPassword.js"
   },
   "dependencies": {
-    "bcryptjs": "^3.0.3",
     "connect-mongo": "^6.0.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.1",
     "express-session": "^1.19.0",
     "helmet": "^8.3.0",
     "mongoose": "^9.11.1",
-    "nodemailer": "^10.0.16",
     "passport": "^0.7.0",
     "passport-google-oauth20": "^2.0.0",
     "pino": "^10.4.0",

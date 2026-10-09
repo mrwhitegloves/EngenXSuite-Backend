@@ -41,20 +41,22 @@ npm run seed              # creates roles, settings and the first CEO in the dev
 
 Two ways, both only for a user account that already exists (there is no sign-up):
 
-- Email + password: `POST /api/auth/login`. Accounts and first passwords are created on the Users
-  screen by the CEO or a Sales Manager. A password set by someone else must be replaced at the
-  first sign-in (`POST /api/auth/password`); until then every other route answers 403.
+- Email + password: `POST /api/auth/login`. Accounts and passwords are created and edited on the
+  Users screen by the CEO or a Sales Manager.
 - Google: `/api/auth/google` → Google → `/api/auth/google/callback`, for a user whose email matches.
 
 The first CEO comes from the seed script; give them a password with `npm run set-password`.
-Passwords are handled only in `infra/password.js`: a bcrypt hash for sign-in, plus an encrypted
-copy (`ENCRYPTION_KEY`) that the CEO and the user's manager can view through
-`GET /api/users/:id/password` (audited). They are never logged and never in a list response.
 
-Forgot password: `POST /api/auth/forgot-password` emails a single-use link (30 minutes);
-`POST /api/auth/reset-password` uses it. Email needs `SMTP_USER` and `SMTP_PASS` in `.env`
-(Google Workspace: a mailbox with 2-step verification and an App password). Without them, in
-development the link is written to the server log instead.
+Passwords (decision 0011, a requirement of the CEO): stored exactly as typed in `users.password`,
+with no hashing and no encryption. `infra/password.js` only compares a typed password with the
+stored one. The CEO and the user's manager can view a password through
+`GET /api/users/:id/password` (audited). Passwords are never logged and never in a list response.
+
+Forgot password: `POST /api/auth/reset-password` with the email of an existing active user and
+the new password. No email is sent and the old password is not asked.
+
+Account types and permissions: `GET /api/roles`, `PATCH /api/roles/:id` (Settings → Roles and
+permissions). A change that would leave nobody able to manage settings and users is refused.
 
 ## How the code is organised
 

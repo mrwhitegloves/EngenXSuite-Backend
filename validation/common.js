@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MAX_PASSWORD_BYTES, MIN_PASSWORD_LENGTH } from '../infra/password.js';
+import { MAX_PASSWORD_LENGTH, MIN_PASSWORD_LENGTH } from '../infra/password.js';
 
 // Building blocks reused by the validation schemas of every feature.
 
@@ -15,15 +15,24 @@ export const email = z
 export const newPassword = z
   .string()
   .min(MIN_PASSWORD_LENGTH, `Use at least ${MIN_PASSWORD_LENGTH} characters`)
-  .refine((value) => Buffer.byteLength(value, 'utf8') <= MAX_PASSWORD_BYTES, {
-    message: 'Password is too long',
-  });
+  .max(MAX_PASSWORD_LENGTH, 'Password is too long');
 
 // Indian and international numbers, stored in E.164 form (+919876543210).
 export const phone = z
   .string()
   .trim()
   .regex(/^\+[1-9]\d{7,14}$/, 'Use the international format, for example +919876543210');
+
+// A web address of a picture. Only https, so the page never loads mixed or script content.
+export const imageUrl = z
+  .string()
+  .trim()
+  .max(500)
+  .pipe(
+    z
+      .url('Enter a full web address')
+      .startsWith('https://', 'The address must start with https://'),
+  );
 
 export const idParams = z.object({ id: objectId });
 

@@ -9,22 +9,9 @@ export const loginBody = z.object({
   password: z.string().min(1, 'Enter your password').max(200),
 });
 
-export const changeMyPasswordBody = z
-  .object({
-    currentPassword: z.string().min(1, 'Enter your current password').max(200),
-    newPassword,
-  })
-  .refine((body) => body.currentPassword !== body.newPassword, {
-    message: 'Choose a password that is different from the current one',
-    path: ['newPassword'],
-  });
-
-export const forgotPasswordBody = z.object({ email });
-
-export const resetPasswordWithTokenBody = z.object({
-  token: z.string().min(20).max(200),
-  newPassword,
-});
+// "Forgot password" from the sign-in page: the email of an existing user and the new password.
+// (The page asks for the new password twice; only one copy is sent.)
+export const resetPasswordBody = z.object({ email, newPassword });
 
 // What a signed-in user may change about themselves. Role, email and status are NOT here:
 // those are changed only through the users endpoints.

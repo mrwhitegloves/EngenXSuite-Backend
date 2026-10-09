@@ -2,10 +2,8 @@ import { env } from '../config/env.js';
 import { passport } from '../infra/googleAuth.js';
 import { SESSION_COOKIE_NAME } from '../middleware/session.js';
 import {
-  changeMyPassword,
   loadRequestUser,
-  requestPasswordReset,
-  resetPasswordWithToken,
+  resetPasswordByEmail,
   signInWithPassword,
   toPublicUser,
   updateMyPreferences,
@@ -30,6 +28,13 @@ export async function loginWithPassword(req, res) {
   const { userId } = await signInWithPassword(req.validated.body);
   await startSession(req, userId);
   sendOk(res, toPublicUser(await loadRequestUser(userId)));
+}
+
+// POST /api/auth/reset-password: "forgot password" from the sign-in page. The email of an
+// existing user plus a new password; no email is sent and the old password is not asked.
+export async function resetPassword(req, res) {
+  await resetPasswordByEmail(req.validated.body, { requestId: req.id });
+  sendOk(res, { reset: true });
 }
 
 // GET /api/auth/google: send the browser to Google's sign-in page.
@@ -60,31 +65,6 @@ export function getCurrentUser(req, res) {
 export async function updateCurrentUser(req, res) {
   const user = await updateMyPreferences(req.user._id, req.validated.body);
   sendOk(res, toPublicUser(user));
-}
-
-// POST /api/auth/password: the signed-in user chooses a new password.
-// This browser stays signed in; every other session of the user is ended.
-export async function changePassword(req, res) {
-  const user = await changeMyPassword(req.user._id, req.validated.body, {
-    keepSessionId: req.sessionID,
-  });
-  sendOk(res, toPublicUser(user));
-}
-
-// POST /api/auth/forgot-password: email a reset link. The answer is always the same, whether
-// or not the email belongs to a user, so this route cannot be used to find out who has an account.
-export async function forgotPassword(req, res) {
-  await requestPasswordReset(req.validated.body.email, {
-    appUrl: env.APP_URL,
-    isProduction: env.NODE_ENV === 'production',
-  });
-  sendOk(res, { requested: true });
-}
-
-// POST /api/auth/reset-password: the token from the emailed link plus a new password.
-export async function resetPassword(req, res) {
-  await resetPasswordWithToken(req.validated.body);
-  sendOk(res, { reset: true });
 }
 
 // POST /api/auth/logout: end the session on the server and clear the cookie.

@@ -4,7 +4,6 @@ import {
   getPassword,
   getUsers,
   patchUser,
-  postResetPassword,
   postUser,
 } from '../controllers/users.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
@@ -12,12 +11,7 @@ import { authorize } from '../middleware/authorize.js';
 import { createPasswordViewLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
-import {
-  createUserBody,
-  listUsersQuery,
-  resetPasswordBody,
-  updateUserBody,
-} from '../validation/users.js';
+import { createUserBody, listUsersQuery, updateUserBody } from '../validation/users.js';
 
 // User accounts. Only roles holding the "users" permission reach these (CEO: everyone,
 // Sales Manager: their own team). Which users exactly is decided again in the service.
@@ -40,12 +34,6 @@ router.get(
   createPasswordViewLimiter(),
   validate({ params: idParams }),
   getPassword,
-);
-router.post(
-  '/:id/reset-password',
-  authorize('users', 'edit'),
-  validate({ params: idParams, body: resetPasswordBody }),
-  postResetPassword,
 );
 
 export default router;

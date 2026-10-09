@@ -6,7 +6,6 @@ const VALID = {
   SESSION_SECRET: 'a-long-random-session-secret-of-40-chars!!',
   GOOGLE_SIGNIN_CLIENT_ID: 'client-id',
   GOOGLE_SIGNIN_CLIENT_SECRET: 'client-secret',
-  ENCRYPTION_KEY: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
 };
 const DEV_URI = 'mongodb+srv://user:pass@host.example.net/crm_dev';
 
@@ -41,14 +40,10 @@ describe('environment validation', () => {
     );
   });
 
-  it('rejects an encryption key that is not 32 bytes', () => {
-    expect(() => parseEnv({ ...VALID, ENCRYPTION_KEY: 'c2hvcnQ=' })).toThrow(/32 bytes/);
-  });
-
   it('treats blank optional values as not set, so defaults apply', () => {
-    const env = parseEnv({ ...VALID, SMTP_PORT: '', SMTP_USER: '', LOG_LEVEL: '' });
-    expect(env.SMTP_PORT).toBe(465);
-    expect(env.SMTP_USER).toBeUndefined();
+    const env = parseEnv({ ...VALID, PORT: '', MONGODB_URI_DEV: '', LOG_LEVEL: '' });
+    expect(env.PORT).toBe(3000);
+    expect(env.MONGODB_URI_DEV).toBeUndefined();
     expect(env.LOG_LEVEL).toBe('info');
   });
 

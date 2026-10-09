@@ -1,17 +1,19 @@
 import { User } from '../models/user.model.js';
 import { Role } from '../models/role.model.js';
+import { env } from '../config/env.js';
 import { getScope } from '../lib/can.js';
 import { scopeRank } from '../constants/permissions.js';
 import { conflict, forbidden, notFound, badRequest } from '../lib/errors.js';
-import { buildPasswordFields, readStoredPassword } from '../infra/password.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { diffFields, writeAudit } from '../lib/audit.js';
 
-// User accounts: created and managed inside the CRM by the CEO and Sales Managers (decision 0009).
-// Every function takes the acting user first and enforces what that user may do.
+// User accounts: created and managed inside the CRM by the CEO and Sales Managers
+// (decisions 0009 and 0011). Every function takes the acting user first and enforces what that
+// user may do.
 
 const FEATURE = 'users';
 const sameId = (a, b) => a != null && b != null && String(a) === String(b);
+const isWorkspaceEmail = (email) => email.endsWith(`@${env.WORKSPACE_DOMAIN.toLowerCase()}`);
 
 /** The MongoDB filter for the users this actor may see. */
 function visibleUsersFilter(actor) {
@@ -44,17 +46,17 @@ function mayAssignRole(actor, role) {
   });
 }
 
-/** How a user is sent to the browser. Never includes the password hash. */
+/** How a user is sent to the browser in lists. Never includes the password. */
 function toUserView(user, rolesById) {
   return {
     id: String(user._id),
     name: user.name,
     email: user.email,
     phone: user.phone ?? null,
+    avatarUrl: user.avatarUrl ?? null,
     status: user.status,
     role: { id: String(user.roleId), name: rolesById.get(String(user.roleId))?.name ?? '' },
     managerId: user.managerId ? String(user.managerId) : null,
-    mustChangePassword: user.mustChangePassword === true,
     lastLoginAt: user.lastLoginAt ?? null,
     createdAt: user.createdAt,
   };
@@ -63,6 +65,12 @@ function toUserView(user, rolesById) {
 async function loadRolesById() {
   const roles = await Role.find().lean();
   return new Map(roles.map((role) => [String(role._id), role]));
+}
+
+async function assertManagerExists(managerId) {
+  if (managerId && !(await User.exists({ _id: managerId, status: { $ne: 'deactivated' } }))) {
+    throw badRequest('The chosen manager does not exist', [{ field: 'managerId' }]);
+  }
 }
 
 /** Refuse a change that would leave the CRM without any active user who can manage all users. */
@@ -114,32 +122,30 @@ export async function listUsers(actor, { page, pageSize, search, status, roleId 
   };
 }
 
-/** The account types this actor may give, and the managers they may choose (for the form). */
+/** The account types this actor may give, and the managers they may choose (for the forms). */
 export async function getUserFormOptions(actor) {
   const rolesById = await loadRolesById();
   const roles = [...rolesById.values()]
     .filter((role) => mayAssignRole(actor, role))
     .map((role) => ({ id: String(role._id), name: role.name, description: role.description }));
 
-  const canChooseManager = getScope(actor, FEATURE, 'create') === 'all';
-  const managers = canChooseManager
-    ? await User.find({ status: { $ne: 'deactivated' } })
-        .select('name email')
-        .sort({ name: 1 })
-        .lean()
-    : [];
+  const managers = await User.find({ status: { $ne: 'deactivated' } })
+    .select('name')
+    .sort({ name: 1 })
+    .lean();
   return {
     roles,
-    canChooseManager,
+    // Only someone who manages all users may leave "reports to" empty.
+    canLeaveManagerEmpty: getScope(actor, FEATURE, 'create') === 'all',
     managers: managers.map((user) => ({ id: String(user._id), name: user.name })),
   };
 }
 
 /**
- * Create a user account with a first password. The new user must choose their own password
- * at their first sign-in.
+ * Create a user account with its password.
  * @param {object} actor
- * @param {{ name: string, email: string, password: string, roleId: string, managerId?: string | null, phone?: string }} data
+ * @param {{ name: string, email: string, password: string, roleId: string, managerId?: string | null,
+ *           phone?: string, avatarUrl?: string }} data
  * @param {{ requestId?: string }} [context]
  */
 export async function createUser(actor, data, context = {}) {
@@ -147,12 +153,10 @@ export async function createUser(actor, data, context = {}) {
   if (!role) throw badRequest('Choose an account type', [{ field: 'roleId' }]);
   if (!mayAssignRole(actor, role)) throw forbidden('You cannot create this account type.');
 
-  // A manager's new users always report to that manager.
+  // A manager's new user reports to that manager unless the manager picks someone else.
   const actorManagesAll = getScope(actor, FEATURE, 'create') === 'all';
-  const managerId = actorManagesAll ? (data.managerId ?? null) : actor._id;
-  if (managerId && !(await User.exists({ _id: managerId, status: { $ne: 'deactivated' } }))) {
-    throw badRequest('The chosen manager does not exist', [{ field: 'managerId' }]);
-  }
+  const managerId = data.managerId ?? (actorManagesAll ? null : actor._id);
+  await assertManagerExists(managerId);
 
   if (await User.exists({ email: data.email })) {
     throw conflict('A user with this email already exists.', [{ field: 'email' }]);
@@ -162,11 +166,13 @@ export async function createUser(actor, data, context = {}) {
     name: data.name,
     email: data.email,
     phone: data.phone,
+    avatarUrl: data.avatarUrl,
     roleId: role._id,
     managerId,
     status: 'active',
-    ...(await buildPasswordFields(data.password)),
-    mustChangePassword: true,
+    isWorkspaceAccount: isWorkspaceEmail(data.email),
+    password: data.password,
+    passwordChangedAt: new Date(),
     invitedBy: actor._id,
   });
 
@@ -182,23 +188,37 @@ export async function createUser(actor, data, context = {}) {
 }
 
 /**
- * Change a user's name, phone, account type, manager or status.
+ * Change anything about a user: name, login email, password, account type, manager, phone,
+ * picture, status (decision 0011).
  * @param {object} actor
  * @param {string} userId
- * @param {{ name?: string, phone?: string | null, roleId?: string, managerId?: string | null, status?: 'active' | 'deactivated' }} changes
+ * @param {object} changes  Already validated (validation/users.js updateUserBody)
  * @param {{ requestId?: string }} [context]
  */
 export async function updateUser(actor, userId, changes, context = {}) {
   const user = await User.findById(userId).lean();
+  const isSelf = user && sameId(user._id, actor._id);
   // 404, not 403: a manager must not learn that a user outside their team exists.
-  if (!user || !canManage(actor, 'edit', user)) throw notFound('User not found');
+  // Someone who manages all users may also edit their own account.
+  const allowed =
+    user &&
+    (canManage(actor, 'edit', user) || (isSelf && getScope(actor, FEATURE, 'edit') === 'all'));
+  if (!allowed) throw notFound('User not found');
 
   const rolesById = await loadRolesById();
-  const actorManagesAll = getScope(actor, FEATURE, 'edit') === 'all';
   const update = {};
 
   if (changes.name !== undefined) update.name = changes.name;
-  if (changes.phone !== undefined) update.phone = changes.phone ?? undefined;
+  if (changes.phone !== undefined) update.phone = changes.phone;
+  if (changes.avatarUrl !== undefined) update.avatarUrl = changes.avatarUrl;
+
+  if (changes.email !== undefined && changes.email !== user.email) {
+    if (await User.exists({ email: changes.email, _id: { $ne: user._id } })) {
+      throw conflict('A user with this email already exists.', [{ field: 'email' }]);
+    }
+    update.email = changes.email;
+    update.isWorkspaceAccount = isWorkspaceEmail(changes.email);
+  }
 
   if (changes.roleId !== undefined && !sameId(changes.roleId, user.roleId)) {
     const role = rolesById.get(String(changes.roleId));
@@ -208,15 +228,19 @@ export async function updateUser(actor, userId, changes, context = {}) {
     update.roleId = role._id;
   }
 
-  if (changes.managerId !== undefined && actorManagesAll) {
+  if (changes.managerId !== undefined && !sameId(changes.managerId, user.managerId)) {
     if (sameId(changes.managerId, user._id)) {
       throw badRequest('A user cannot be their own manager', [{ field: 'managerId' }]);
     }
+    if (changes.managerId === null && getScope(actor, FEATURE, 'edit') !== 'all') {
+      throw badRequest('Choose who this user reports to', [{ field: 'managerId' }]);
+    }
+    await assertManagerExists(changes.managerId);
     update.managerId = changes.managerId;
   }
 
   if (changes.status !== undefined && changes.status !== user.status) {
-    if (sameId(user._id, actor._id)) throw conflict('You cannot deactivate your own account.');
+    if (isSelf) throw conflict('You cannot deactivate your own account.');
     if (changes.status === 'deactivated') {
       await assertAnotherAdminRemains(user._id, rolesById);
       update.status = 'deactivated';
@@ -228,35 +252,62 @@ export async function updateUser(actor, userId, changes, context = {}) {
   }
 
   const { oldValue, newValue, changed } = diffFields(user, update);
-  if (!changed) return toUserView(user, rolesById);
 
-  await User.updateOne({ _id: user._id }, { $set: update });
-  // A deactivated user is signed out at once, everywhere.
-  if (update.status === 'deactivated') await revokeUserSessions(user._id);
+  // The password is handled apart from the other fields: it must never reach the audit log.
+  const current = await User.findById(user._id).select('+password').lean();
+  const passwordChanged = changes.password !== undefined && changes.password !== current.password;
+  if (passwordChanged) {
+    update.password = changes.password;
+    update.passwordChangedAt = new Date();
+  }
+  if (!changed && !passwordChanged) return toUserView(user, rolesById);
 
-  await writeAudit({
-    actor,
-    action: update.status === 'deactivated' ? 'user.deactivated' : 'user.updated',
-    entityType: 'users',
-    entityId: user._id,
-    oldValue,
-    newValue,
-    requestId: context.requestId,
-  });
+  const mongoUpdate = { $set: update };
+  // A different email is a different Google account: forget the old Google link.
+  if (update.email) mongoUpdate.$unset = { googleId: '' };
+  await User.updateOne({ _id: user._id }, mongoUpdate);
+
+  // Deactivated, or password changed by someone else: sign the user out everywhere.
+  if (update.status === 'deactivated' || (passwordChanged && !isSelf)) {
+    await revokeUserSessions(user._id);
+  }
+
+  if (changed) {
+    await writeAudit({
+      actor,
+      action: update.status === 'deactivated' ? 'user.deactivated' : 'user.updated',
+      entityType: 'users',
+      entityId: user._id,
+      oldValue,
+      newValue,
+      requestId: context.requestId,
+    });
+  }
+  if (passwordChanged) {
+    await writeAudit({
+      actor,
+      action: 'user.password_changed_by_admin',
+      entityType: 'users',
+      entityId: user._id,
+      requestId: context.requestId,
+    });
+  }
   return toUserView({ ...user, ...update }, rolesById);
 }
 
 /**
- * The real password of one user, for the CEO or that user's manager to see (decision 0010).
+ * The password of one user, for the CEO or that user's manager to see.
  * One user at a time, the same scope check as editing them, and every view is audited.
  * @returns {Promise<{ password: string | null, available: boolean }>}
- *   available = false when the password was set before readable copies were stored.
  */
 export async function getUserPassword(actor, userId, context = {}) {
-  const user = await User.findById(userId).select('+passwordEnc managerId').lean();
-  if (!user || !canManage(actor, 'edit', user)) throw notFound('User not found');
+  const user = await User.findById(userId).select('+password managerId').lean();
+  const isSelf = user && sameId(user._id, actor._id);
+  const allowed =
+    user &&
+    (canManage(actor, 'edit', user) || (isSelf && getScope(actor, FEATURE, 'edit') === 'all'));
+  if (!allowed) throw notFound('User not found');
 
-  const password = readStoredPassword(user.passwordEnc);
   await writeAudit({
     actor,
     action: 'user.password_viewed',
@@ -264,32 +315,6 @@ export async function getUserPassword(actor, userId, context = {}) {
     entityId: user._id,
     requestId: context.requestId,
   });
+  const password = user.password ?? null;
   return { password, available: password !== null };
-}
-
-/**
- * Set a new password for another user. They are signed out everywhere and must choose their
- * own password at the next sign-in.
- */
-export async function resetUserPassword(actor, userId, password, context = {}) {
-  const user = await User.findById(userId).lean();
-  if (!user || !canManage(actor, 'edit', user)) throw notFound('User not found');
-  if (sameId(user._id, actor._id)) {
-    throw conflict('Use "Change password" to change your own password.');
-  }
-
-  await User.updateOne(
-    { _id: user._id },
-    {
-      $set: { ...(await buildPasswordFields(password)), mustChangePassword: true },
-    },
-  );
-  await revokeUserSessions(user._id);
-  await writeAudit({
-    actor,
-    action: 'user.password_reset',
-    entityType: 'users',
-    entityId: user._id,
-    requestId: context.requestId,
-  });
 }

@@ -47,30 +47,19 @@ export function createLoginLimiter({ limit = 5, windowMs = 15 * MINUTE_MS, skip 
   });
 }
 
-/** "Forgot password" requests: 3 per 15 minutes per IP address and email (no email flooding). */
-export function createPasswordResetLimiter({ limit = 3, windowMs = 15 * MINUTE_MS, skip } = {}) {
+/** Password resets from the sign-in page: 5 per 15 minutes per IP address and email. */
+export function createPasswordResetLimiter({ limit = 5, windowMs = 15 * MINUTE_MS, skip } = {}) {
   return createLimiter({
     limit,
     windowMs,
     skip,
     keyGenerator: ipAndEmail,
-    message: 'Too many requests. Please wait a few minutes and try again.',
-  });
-}
-
-/** Using a reset link: 10 tries per 15 minutes per IP address (no token guessing). */
-export function createResetTokenLimiter({ limit = 10, windowMs = 15 * MINUTE_MS, skip } = {}) {
-  return createLimiter({
-    limit,
-    windowMs,
-    skip,
-    keyGenerator: (req) => ipKeyGenerator(req.ip),
     message: 'Too many attempts. Please wait a few minutes and try again.',
   });
 }
 
-/** Viewing stored passwords: 30 per hour per signed-in user (decision 0010). */
-export function createPasswordViewLimiter({ limit = 30, windowMs = 60 * MINUTE_MS, skip } = {}) {
+/** Viewing passwords on the Users screen: 60 per hour per signed-in user. */
+export function createPasswordViewLimiter({ limit = 60, windowMs = 60 * MINUTE_MS, skip } = {}) {
   return createLimiter({
     limit,
     windowMs,
