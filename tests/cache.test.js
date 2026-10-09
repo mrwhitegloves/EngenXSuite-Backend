@@ -41,7 +41,9 @@ describe('cache getOrSet', () => {
     expect(await getOrSet('report', 60, fetchFn)).toEqual({ total: 42 });
 
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(state.ttls.get('cache:v1:report')).toBe(60); // never stored without a lifetime
+    // Never stored without a lifetime. The key carries the environment ("test" here), so
+    // development and production never read each other's entries on a shared Redis.
+    expect(state.ttls.get('cache:v1:test:report')).toBe(60);
   });
 
   it("keeps different keys apart, so one user never receives another user's data", async () => {

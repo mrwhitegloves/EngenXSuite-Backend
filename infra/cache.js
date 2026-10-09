@@ -1,3 +1,4 @@
+import { env } from '../config/env.js';
 import { getRedis } from './redis.js';
 import { logger } from './logger.js';
 
@@ -7,7 +8,9 @@ import { logger } from './logger.js';
 //   3. Every key has a lifetime, and data that depends on who is asking must carry the user id
 //      or scope in its key, so one user can never receive another user's data.
 
-const PREFIX = 'cache:v1:';
+// The environment is part of every key: development and production may share one Redis, and
+// must never read each other's cached data (they have different databases).
+const PREFIX = `cache:v1:${env.NODE_ENV}:`;
 
 /**
  * Return the cached value for `key`, or fetch it, cache it for `ttlSeconds`, and return it.

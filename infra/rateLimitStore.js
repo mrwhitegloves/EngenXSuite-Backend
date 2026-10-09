@@ -1,5 +1,6 @@
 import { MemoryStore } from 'express-rate-limit';
 import { RedisStore } from 'rate-limit-redis';
+import { env } from '../config/env.js';
 import { getRedis } from './redis.js';
 
 // Where the rate limiter keeps its counters: in Redis when Redis is usable, otherwise in this
@@ -24,7 +25,8 @@ export function createRateLimitStore(name) {
     if (!redis) return null;
     if (!redisStore) {
       redisStore = new RedisStore({
-        prefix: `rl:${name}:`,
+        // The environment is in the key: development and production may share one Redis.
+        prefix: `rl:${env.NODE_ENV}:${name}:`,
         sendCommand: (command, ...args) => {
           const client = getRedis();
           if (!client) return Promise.reject(new Error('Redis is not available'));

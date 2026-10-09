@@ -10,4 +10,6 @@ export const SOCKET_EVENTS = {
   usersChanged: 'users.changed',
   // An account type or its permissions changed: everyone's menu and rights may differ now.
   permissionsChanged: 'permissions.changed',
+  // The product name or company name changed.
+  brandingChanged: 'branding.changed',
 };

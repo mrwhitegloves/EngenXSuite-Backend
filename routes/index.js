@@ -8,6 +8,7 @@ import jobsRoutes from './jobs.routes.js';
 import auditRoutes from './audit.routes.js';
 import backupsRoutes from './backups.routes.js';
 import savedViewsRoutes from './savedViews.routes.js';
+import settingsRoutes from './settings.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -21,5 +22,6 @@ router.use('/jobs', jobsRoutes);
 router.use('/audit-logs', auditRoutes);
 router.use('/backups', backupsRoutes);
 router.use('/saved-views', savedViewsRoutes);
+router.use('/settings', settingsRoutes);
 
 export default router;

@@ -12,6 +12,9 @@ const NAME_SOURCES = {
   roles: { model: Role, field: 'name' },
 };
 
+// Record types of which there is only one: they have a fixed name instead of a lookup.
+const FIXED_NAMES = { settings: 'Product settings' };
+
 async function loadNames(model, field, ids) {
   if (ids.length === 0) return new Map();
   const rows = await model
@@ -59,7 +62,10 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
       : null,
     entityType: entry.entityType,
     entityId: String(entry.entityId),
-    entityName: entityNames[entry.entityType]?.get(String(entry.entityId)) ?? null,
+    entityName:
+      FIXED_NAMES[entry.entityType] ??
+      entityNames[entry.entityType]?.get(String(entry.entityId)) ??
+      null,
     oldValue: entry.oldValue ?? null,
     newValue: entry.newValue ?? null,
   }));
