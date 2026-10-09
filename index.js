@@ -7,6 +7,8 @@ import { connectRedis, disconnectRedis } from './infra/redis.js';
 import { closeQueues } from './infra/queues.js';
 import { startWorkers, stopWorkers } from './infra/workers.js';
 import { JOB_HANDLERS } from './jobs/index.js';
+import { startRealtime, stopRealtime } from './infra/realtime.js';
+import { loadRequestUser } from './services/auth.service.js';
 import { flushSentry, initSentry, reportError } from './infra/sentry.js';
 import { createApp } from './app.js';
 
@@ -20,10 +22,13 @@ async function start() {
   logger.info({ database: env.DATABASE_KIND }, 'Using database');
 
   configureGoogleAuth();
-  const app = createApp({ sessionMiddleware: createSessionMiddleware() });
+  const sessionMiddleware = createSessionMiddleware();
+  const app = createApp({ sessionMiddleware });
   const server = app.listen(env.PORT, () => {
     logger.info({ port: env.PORT }, 'Server listening');
   });
+  // Live updates share the HTTP server and the session of the REST API.
+  startRealtime(server, { sessionMiddleware, loadUser: loadRequestUser });
   // Background jobs run inside this same process. Without Redis they are simply off.
   startWorkers(JOB_HANDLERS);
 
@@ -31,6 +36,8 @@ async function start() {
   // let running ones finish, then close the database connection.
   async function shutdown(signal) {
     logger.info({ signal }, 'Shutting down');
+    // Open live connections would keep the server from closing.
+    stopRealtime();
     server.close(async () => {
       await stopWorkers();
       await closeQueues();

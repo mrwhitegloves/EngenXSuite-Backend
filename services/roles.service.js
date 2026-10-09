@@ -3,6 +3,8 @@ import { User } from '../models/user.model.js';
 import { ACTIONS, FEATURES, SCOPES } from '../constants/permissions.js';
 import { conflict, notFound } from '../lib/errors.js';
 import { writeAudit } from '../lib/audit.js';
+import { emitToAll } from '../infra/realtime.js';
+import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 
 // Account types (roles) and what each may do. Roles are data: this is where an administrator
 // changes them (Master Prompt Sections 36 and 37). Reached only with the "settings" permission.
@@ -77,6 +79,7 @@ export async function createRole(actor, data, context = {}) {
     newValue: { name: role.name, grants: role.grants.length },
     requestId: context.requestId,
   });
+  emitToAll(SOCKET_EVENTS.permissionsChanged);
   return toRoleView(role.toObject(), 0);
 }
 
@@ -117,6 +120,8 @@ export async function updateRole(actor, roleId, changes, context = {}) {
     newValue: update,
     requestId: context.requestId,
   });
+  // Live update: every signed-in browser reloads its own permissions and menu.
+  emitToAll(SOCKET_EVENTS.permissionsChanged);
 
   const updated = await Role.findById(role._id).lean();
   const userCount = await User.countDocuments({
@@ -143,4 +148,5 @@ export async function deleteRole(actor, roleId, context = {}) {
     oldValue: { name: role.name },
     requestId: context.requestId,
   });
+  emitToAll(SOCKET_EVENTS.permissionsChanged);
 }

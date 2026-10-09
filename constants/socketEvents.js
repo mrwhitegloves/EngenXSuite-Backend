@@ -1,0 +1,13 @@
+// Names of the live "something changed" events sent to browsers (Socket.IO).
+// An event never carries record data: the browser reacts by asking the REST API again, which
+// applies the permission checks. The client keeps its own copy of these names
+// (client/src/config/realtimeEvents.js), because the two projects share no code.
+
+export const SOCKET_EVENTS = {
+  // Sent to one user: their own account changed (name, picture, account type, …).
+  meChanged: 'me.changed',
+  // The list of users changed.
+  usersChanged: 'users.changed',
+  // An account type or its permissions changed: everyone's menu and rights may differ now.
+  permissionsChanged: 'permissions.changed',
+};

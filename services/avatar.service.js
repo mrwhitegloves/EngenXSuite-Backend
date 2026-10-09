@@ -4,6 +4,14 @@ import { deleteObject, isStorageConfigured, keyFromUrl, uploadObject } from '../
 import { logger } from '../infra/logger.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { writeAudit } from '../lib/audit.js';
+import { emitToAll, emitToUser } from '../infra/realtime.js';
+import { SOCKET_EVENTS } from '../constants/socketEvents.js';
+
+/** Live update after a picture change: the user's own browser and open Users screens reload. */
+function announcePictureChange(userId) {
+  emitToUser(userId, SOCKET_EVENTS.meChanged);
+  emitToAll(SOCKET_EVENTS.usersChanged);
+}
 
 // Profile pictures: the image goes to S3 and only its S3 address is saved on the user
 // (`users.avatarUrl`). Used for a user's own picture and by administrators editing a user.
@@ -54,6 +62,7 @@ export async function saveAvatar({ actor, userId, file, requestId }) {
     entityId: user._id,
     requestId,
   });
+  announcePictureChange(user._id);
   return url;
 }
 
@@ -115,4 +124,5 @@ export async function removeAvatar({ actor, userId, requestId }) {
     entityId: user._id,
     requestId,
   });
+  announcePictureChange(user._id);
 }

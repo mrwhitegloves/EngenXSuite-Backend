@@ -7,6 +7,8 @@ import { conflict, forbidden, notFound, badRequest } from '../lib/errors.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { diffFields, writeAudit } from '../lib/audit.js';
 import { toReadableUrl } from '../infra/storage.js';
+import { emitToAll, emitToUser } from '../infra/realtime.js';
+import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 
 // User accounts: created and managed inside the CRM by the CEO and Sales Managers
 // (decisions 0009 and 0011). Every function takes the acting user first and enforces what that
@@ -185,6 +187,7 @@ export async function createUser(actor, data, context = {}) {
     newValue: { name: user.name, email: user.email, role: role.name, managerId },
     requestId: context.requestId,
   });
+  emitToAll(SOCKET_EVENTS.usersChanged);
   return toUserView(user.toObject(), new Map([[String(role._id), role]]));
 }
 
@@ -292,6 +295,10 @@ export async function updateUser(actor, userId, changes, context = {}) {
       requestId: context.requestId,
     });
   }
+  // Live update: open Users screens reload, and the changed user's own browser reloads their
+  // name, picture and permissions.
+  emitToAll(SOCKET_EVENTS.usersChanged);
+  emitToUser(user._id, SOCKET_EVENTS.meChanged);
   return toUserView({ ...user, ...update }, rolesById);
 }
 
