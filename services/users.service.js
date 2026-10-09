@@ -6,6 +6,7 @@ import { scopeRank } from '../constants/permissions.js';
 import { conflict, forbidden, notFound, badRequest } from '../lib/errors.js';
 import { revokeUserSessions } from '../lib/sessions.js';
 import { diffFields, writeAudit } from '../lib/audit.js';
+import { buildFilter, buildSort, runListQuery } from '../lib/queryBuilder.js';
 import { toReadableUrl } from '../infra/storage.js';
 import { emitToAll, emitToUser } from '../infra/realtime.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
@@ -15,6 +16,13 @@ import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 // user may do.
 
 const FEATURE = 'users';
+// Sort names the list accepts (validation/users.js USER_SORTS) → database fields.
+const SORT_FIELDS = {
+  name: 'name',
+  status: 'status',
+  lastLoginAt: 'lastLoginAt',
+  createdAt: 'createdAt',
+};
 const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 const isWorkspaceEmail = (email) => email.endsWith(`@${env.WORKSPACE_DOMAIN.toLowerCase()}`);
 
@@ -100,29 +108,19 @@ async function assertAnotherAdminRemains(targetUserId, rolesById) {
  * @param {object} actor
  * @param {{ page: number, pageSize: number, search?: string, status?: string, roleId?: string }} query
  */
-export async function listUsers(actor, { page, pageSize, search, status, roleId }) {
-  const filters = [visibleUsersFilter(actor)];
-  if (status) filters.push({ status });
-  if (roleId) filters.push({ roleId });
-  if (search) {
-    // Escape the text so it is matched literally, not run as a pattern.
-    const pattern = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    filters.push({ $or: [{ name: pattern }, { email: pattern }] });
-  }
-  const filter = { $and: filters };
-
-  const [users, total, rolesById] = await Promise.all([
-    User.find(filter)
-      .sort({ name: 1 })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
-      .lean(),
-    User.countDocuments(filter),
+export async function listUsers(actor, { page, pageSize, sort, search, status, roleId }) {
+  const filter = buildFilter({
+    scope: visibleUsersFilter(actor),
+    equals: { status, roleId },
+    search: { text: search, fields: ['name', 'email'] },
+  });
+  const [{ rows, pagination }, rolesById] = await Promise.all([
+    runListQuery(User, { filter, sort: buildSort(sort, SORT_FIELDS, 'name'), page, pageSize }),
     loadRolesById(),
   ]);
   return {
-    items: await Promise.all(users.map((user) => toUserView(user, rolesById))),
-    pagination: { page, pageSize, total },
+    items: await Promise.all(rows.map((user) => toUserView(user, rolesById))),
+    pagination,
   };
 }
 

@@ -1,7 +1,7 @@
 import { AuditLog } from '../models/auditLog.model.js';
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
-import { dateRangeFilter, resolveDateRange } from '../lib/dateRange.js';
+import { buildFilter, runListQuery } from '../lib/queryBuilder.js';
 
 // Reading the audit log (Master Prompt Section 54). Read-only: nothing here writes, changes or
 // deletes an entry. Entries are written only by writeAudit() in lib/audit.js.
@@ -26,19 +26,18 @@ async function loadNames(model, field, ids) {
  *           range?: string, from?: string, to?: string }} query  Already validated
  */
 export async function listAuditLogs({ page, pageSize, userId, entityType, action, ...dates }) {
-  const filter = { ...dateRangeFilter('at', resolveDateRange(dates)) };
-  if (userId) filter.userId = userId === 'system' ? null : userId;
-  if (entityType) filter.entityType = entityType;
-  if (action) filter.action = action;
-
-  const [entries, total] = await Promise.all([
-    AuditLog.find(filter)
-      .sort({ at: -1, _id: -1 })
-      .skip((page - 1) * pageSize)
-      .limit(pageSize)
-      .lean(),
-    AuditLog.countDocuments(filter),
-  ]);
+  const filter = buildFilter({
+    equals: { entityType, action },
+    dates: { field: 'at', query: dates },
+    // "system" means entries without a user.
+    extra: userId ? [{ userId: userId === 'system' ? null : userId }] : [],
+  });
+  const { rows: entries, pagination } = await runListQuery(AuditLog, {
+    filter,
+    sort: { at: -1, _id: -1 },
+    page,
+    pageSize,
+  });
 
   // Names for "who" and for "which record", looked up once for the whole page.
   const idsOf = (type) =>
@@ -64,7 +63,7 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
     oldValue: entry.oldValue ?? null,
     newValue: entry.newValue ?? null,
   }));
-  return { items, pagination: { page, pageSize, total } };
+  return { items, pagination };
 }
 
 /** What the filter dropdowns offer: the users, record types and actions that exist. */

@@ -1,11 +1,15 @@
 import { z } from 'zod';
 import { USER_STATUSES } from '../models/user.model.js';
-import { email, newPassword, objectId, pagination, phone } from './common.js';
+import { email, newPassword, objectId, pagination, phone, sortBy } from './common.js';
 
 const name = z.string().trim().min(1, 'Enter a name').max(120);
 
+// The columns the Users list can be sorted by.
+export const USER_SORTS = ['name', 'status', 'lastLoginAt', 'createdAt'];
+
 export const listUsersQuery = z.object({
   ...pagination,
+  sort: sortBy(USER_SORTS),
   search: z.string().trim().max(100).optional(),
   status: z.enum(USER_STATUSES).optional(),
   roleId: objectId.optional(),

@@ -34,6 +34,19 @@ export const dateRange = {
   to: z.string().trim().max(10).optional(),
 };
 
+/**
+ * The `sort` value of a list: one of the given names, with a leading "-" for descending.
+ *   sort: sortBy(['name', 'createdAt'])     accepts "name", "-name", "createdAt", "-createdAt"
+ */
+export function sortBy(names) {
+  return z
+    .string()
+    .trim()
+    .max(60)
+    .refine((value) => names.includes(value.replace(/^-/, '')), 'Cannot sort by this')
+    .optional();
+}
+
 // Every list endpoint accepts these (Master Prompt Section 74).
 export const pagination = {
   page: z.coerce.number().int().min(1).default(1),
