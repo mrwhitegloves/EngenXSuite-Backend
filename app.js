@@ -5,6 +5,7 @@ import apiRoutes from './routes/index.js';
 import { passport } from './infra/googleAuth.js';
 import { requestLogger } from './middleware/requestId.js';
 import { createCsrfProtection } from './middleware/csrf.js';
+import { createApiLimiter } from './middleware/rateLimit.js';
 import { apiNotFound, errorHandler } from './middleware/errorHandler.js';
 
 /**
@@ -32,11 +33,21 @@ export function createApp({ sessionMiddleware } = {}) {
   app.use(helmet());
   // Refuses changing requests that another website makes a signed-in browser send.
   app.use(createCsrfProtection());
-  app.use(express.json({ limit: '1mb' }));
+  app.use(
+    express.json({
+      limit: '1mb',
+      // A provider's signature is calculated over the exact bytes it sent, so webhook requests
+      // keep them. Other requests do not need them.
+      verify: (req, res, buffer) => {
+        if (req.originalUrl.startsWith('/api/webhooks/')) req.rawBody = buffer;
+      },
+    }),
+  );
   if (sessionMiddleware) app.use(sessionMiddleware);
   app.use(passport.initialize());
 
-  app.use('/api', apiRoutes);
+  // After the session, so a signed-in user is counted by user and not by address.
+  app.use('/api', createApiLimiter(), apiRoutes);
   app.use(apiNotFound);
 
   app.use(errorHandler);

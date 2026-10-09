@@ -11,7 +11,8 @@ const MINUTE_MS = 60 * 1000;
 /**
  * Build a limiter that answers 429 in our standard error shape.
  * @param {{ name: string, limit: number, windowMs: number, message: string,
- *           keyGenerator: (req: import('express').Request) => string, skip?: () => boolean }} options
+ *           keyGenerator: (req: import('express').Request) => string,
+ *           skip?: (req: import('express').Request) => boolean }} options
  */
 function createLimiter({ name, limit, windowMs, message, keyGenerator, skip }) {
   return rateLimit({
@@ -25,6 +26,26 @@ function createLimiter({ name, limit, windowMs, message, keyGenerator, skip }) {
     keyGenerator,
     // express-rate-limit has already set the Retry-After header at this point.
     handler: (req, res, next) => next(createAppError('TOO_MANY_REQUESTS', 429, message)),
+  });
+}
+
+/**
+ * Every API call: 120 per minute per signed-in user, or per address for someone not signed in.
+ * It stops a runaway script or a stuck browser tab from loading the server for everyone.
+ * Not counted: health checks (the host calls them constantly) and provider webhooks (they are
+ * checked by their signature instead).
+ * Mounted on /api after the session middleware, so the user id is known.
+ */
+export function createApiLimiter({ limit = 120, windowMs = MINUTE_MS, skip } = {}) {
+  const isOff = skip ?? (() => env.NODE_ENV === 'test');
+  return createLimiter({
+    limit,
+    windowMs,
+    name: 'api',
+    skip: (req) => isOff() || req.path.startsWith('/health') || req.path.startsWith('/webhooks/'),
+    keyGenerator: (req) =>
+      req.session?.userId ? `user:${req.session.userId}` : `ip:${ipKeyGenerator(req.ip)}`,
+    message: 'Too many requests. Please wait a minute and try again.',
   });
 }
 

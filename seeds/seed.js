@@ -1,10 +1,14 @@
 import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
 import { Settings } from '../models/settings.model.js';
+import { PipelineStage } from '../models/pipelineStage.model.js';
+import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { DEFAULT_ROLE_GRANTS } from '../constants/permissions.js';
+import { DEFAULT_PIPELINE_STAGES, DEFAULT_SOLUTION_CATEGORIES } from './defaults.js';
 
-// Creates the data the app cannot start without: the three roles, the settings record and the
-// first CEO user. Safe to run any number of times: it only creates what is missing and never
+// Creates the data the app cannot start without: runSeed() makes the three roles, the settings
+// record and the first CEO user; seedStartingLists() makes the starting pipeline stages and
+// solution categories. `npm run seed` runs both. Safe to run any number of times: it only creates what is missing and never
 // overwrites something an administrator has changed in the app.
 
 const ROLE_DESCRIPTIONS = {
@@ -64,4 +68,33 @@ export async function runSeed({
   }
 
   return { rolesCreated, settingsCreated: settingsResult.upsertedCount > 0, ceoCreated };
+}
+
+/**
+ * The starting pipeline stages and solution categories. Each list is written only into an
+ * EMPTY collection: once an administrator has any stage or category, the seed leaves the whole
+ * list alone and never brings back one that was deleted or renamed. Safe to run any number of times.
+ * @returns {Promise<{ stagesCreated: number, categoriesCreated: number }>}
+ */
+export async function seedStartingLists() {
+  let stagesCreated = 0;
+  if ((await PipelineStage.estimatedDocumentCount()) === 0) {
+    const stages = DEFAULT_PIPELINE_STAGES.map(({ probability, ...stage }, index) => ({
+      ...stage,
+      order: (index + 1) * 10,
+      defaultProbability: probability,
+    }));
+    stagesCreated = (await PipelineStage.insertMany(stages)).length;
+  }
+
+  let categoriesCreated = 0;
+  if ((await SolutionCategory.estimatedDocumentCount()) === 0) {
+    const categories = DEFAULT_SOLUTION_CATEGORIES.map((name, index) => ({
+      name,
+      order: (index + 1) * 10,
+    }));
+    categoriesCreated = (await SolutionCategory.insertMany(categories)).length;
+  }
+
+  return { stagesCreated, categoriesCreated };
 }

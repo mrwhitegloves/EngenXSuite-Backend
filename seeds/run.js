@@ -1,7 +1,7 @@
 import { env } from '../config/env.js';
 import { logger } from '../infra/logger.js';
 import { connectMongo, disconnectMongo } from '../infra/mongo.js';
-import { runSeed } from './seed.js';
+import { runSeed, seedStartingLists } from './seed.js';
 
 // Command-line entry for the seed:  npm run seed
 // Uses the same database the app would use (development unless NODE_ENV=production).
@@ -18,7 +18,8 @@ async function main() {
       // npm run seed -- --reset-role-grants
       resetRoleGrants: process.argv.includes('--reset-role-grants'),
     });
-    logger.info(result, 'Seed finished');
+    const lists = await seedStartingLists();
+    logger.info({ ...result, ...lists }, 'Seed finished');
   } finally {
     await disconnectMongo();
   }

@@ -17,6 +17,15 @@ const SCHEDULES = [
     // Needs somewhere to put the backup.
     isEnabled: () => isStorageConfigured(),
   },
+  {
+    // Every 5 minutes: queue webhook events that were stored while the queue was not available.
+    id: 'webhook-sweep',
+    queue: 'webhooks',
+    cron: '*/5 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.webhookSweep,
+    isEnabled: () => true,
+  },
 ];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

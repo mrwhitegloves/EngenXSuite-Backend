@@ -4,4 +4,6 @@
 export const JOB_NAMES = {
   systemPing: 'system.ping',
   databaseBackup: 'backup.database',
+  webhookProcess: 'webhook.process',
+  webhookSweep: 'webhook.sweep',
 };
