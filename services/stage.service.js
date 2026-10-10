@@ -3,6 +3,7 @@ import { writeAudit } from '../lib/audit.js';
 import { badRequest, conflict } from '../lib/errors.js';
 import { Opportunity, StageHistory } from '../models/opportunity.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
+import { recordSystemActivity } from './activities.service.js';
 
 // THE stage service (Master Prompt Section 12, REQ-OPP-003). A lead has exactly one stage, and
 // only the functions in this file write it: `stageId`, `stageEnteredAt`, `status`, `closedAt`,
@@ -95,6 +96,7 @@ export async function moveToStage(actor, lead, data, context = {}) {
     Object.assign(unset, { closedAt: '', closeReason: '', lostToCompetitor: '' });
   }
 
+  let historyRow;
   await mongoose.connection.transaction(async (session) => {
     // Only when the lead is still in the stage we read: two people moving the same card at the
     // same moment must not both win.
@@ -106,7 +108,7 @@ export async function moveToStage(actor, lead, data, context = {}) {
     if (result.matchedCount === 0) {
       throw conflict('Someone else just moved this lead. Reload and try again.');
     }
-    await StageHistory.create(
+    [historyRow] = await StageHistory.create(
       [
         {
           opportunityId: lead._id,
@@ -133,6 +135,24 @@ export async function moveToStage(actor, lead, data, context = {}) {
       ...(isClosing ? { closeReason, lostToCompetitor: set.lostToCompetitor ?? null } : {}),
     },
     requestId: context.requestId,
+  });
+  // The timeline entry. Tied to the history row, so it can never be written twice.
+  await recordSystemActivity({
+    subtype: 'stage_changed',
+    opportunityId: lead._id,
+    accountId: lead.accountId,
+    userId: actor?._id,
+    occurredAt: now,
+    title: `Stage: ${previous?.name ?? 'none'} → ${stage.name}`,
+    content: isClosing ? closeReason : undefined,
+    metadata: {
+      from: previous?.name ?? null,
+      to: stage.name,
+      type: stage.type,
+      lostToCompetitor: set.lostToCompetitor ?? null,
+    },
+    refCollection: 'stage_history',
+    refId: historyRow._id,
   });
   return { changed: true };
 }

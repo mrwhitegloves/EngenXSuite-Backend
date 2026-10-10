@@ -18,6 +18,10 @@ export const SOCKET_EVENTS = {
   plantsChanged: 'plants.changed',
   // A lead was added, changed, moved to another stage, reassigned or deleted.
   opportunitiesChanged: 'opportunities.changed',
+  // A timeline entry was added, changed or removed (a note, a stage change, a task event …).
+  activitiesChanged: 'activities.changed',
+  // A task was added, changed, completed or deleted.
+  tasksChanged: 'tasks.changed',
   // A tag was added, renamed, merged or deleted.
   tagsChanged: 'tags.changed',
   // Sent to one user: an import of theirs moved on (progress, finished, undone).

@@ -27,6 +27,7 @@ import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { LeadStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction, registerAccountDeleteBlocker } from './accounts.service.js';
+import { recordSystemActivity } from './activities.service.js';
 import { moveToStage, startingStage, writeFirstStage } from './stage.service.js';
 import { assertUsableTags, loadTagsById } from './tags.service.js';
 
@@ -520,6 +521,16 @@ export async function createLead(actor, data, context = {}) {
     },
     requestId: context.requestId,
   });
+  await recordSystemActivity({
+    subtype: 'lead_created',
+    opportunityId: lead._id,
+    accountId: account._id,
+    userId: actor._id,
+    occurredAt: now,
+    title: `Lead created: ${lead.name}`,
+    refCollection: 'opportunities',
+    refId: lead._id,
+  });
   announce();
   return detailOf(lead.toObject(), actor);
 }
@@ -599,6 +610,24 @@ export async function updateLead(actor, leadId, changes, context = {}) {
       action: 'lead.assignment_changed',
       oldValue: pick(plan.oldValue, peopleChanged),
       newValue: pick(plan.newValue, peopleChanged),
+    });
+  }
+
+  // The timeline says that the lead was changed and by whom; the audit log has the values.
+  const onTimeline = { opportunityId: lead._id, accountId: lead.accountId, userId: actor._id };
+  if (otherChanged.length > 0) {
+    await recordSystemActivity({
+      ...onTimeline,
+      subtype: 'lead_updated',
+      title: 'Lead updated',
+      metadata: { fields: otherChanged },
+    });
+  }
+  if (peopleChanged.length > 0) {
+    await recordSystemActivity({
+      ...onTimeline,
+      subtype: 'lead_assigned',
+      title: 'Owner or assigned people changed',
     });
   }
 
