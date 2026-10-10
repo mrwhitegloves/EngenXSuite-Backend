@@ -43,6 +43,8 @@ export function createApp({ sessionMiddleware } = {}) {
       },
     }),
   );
+  // Some providers (Plivo) send their webhooks as form fields.
+  app.use('/api/webhooks', express.urlencoded({ extended: false, limit: '100kb' }));
   if (sessionMiddleware) app.use(sessionMiddleware);
   app.use(passport.initialize());
 

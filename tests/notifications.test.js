@@ -116,6 +116,8 @@ describe('preferences', () => {
       ['lead_assigned', true],
       // Added with the Meta lead ads (2026-10-11): a new lead that comes in for me.
       ['lead_received', true],
+      // Added with Plivo calling (2026-10-10): a call to me that nobody picked up.
+      ['call_missed', true],
     ]);
 
     await asAgent.patch('/api/notifications/preferences').send({ enabled: false });

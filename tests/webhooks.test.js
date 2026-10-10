@@ -189,7 +189,8 @@ describe('webhook receiver', () => {
 
   it('an event for a provider without a processor is kept and marked ignored', async () => {
     const event = await WebhookEvent.create({
-      provider: 'plivo',
+      // A provider nobody handles yet ('plivo' stood here until Plivo calling got its processor).
+      provider: 'email_provider',
       eventId: 'call-1',
       payload: { a: 1 },
       signatureValid: true,

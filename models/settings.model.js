@@ -25,6 +25,19 @@ const settingsSchema = new mongoose.Schema(
       logoDarkFileId: { type: mongoose.Schema.Types.ObjectId, default: null },
       faviconFileId: { type: mongoose.Schema.Types.ObjectId, default: null },
     },
+    calls: {
+      // Record calls (where the law allows it). Off: no call is recorded.
+      recordingEnabled: { type: Boolean, default: false },
+      // Said to the other side before a recorded call is joined.
+      consentText: {
+        type: String,
+        trim: true,
+        maxlength: 300,
+        default: 'This call may be recorded for quality and training.',
+      },
+      // Who gets an inbound call from a number nobody knows, or whose owner has no phone.
+      defaultInboundUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
     leadAssignment: {
       mode: { type: String, enum: ASSIGNMENT_MODES, default: 'round_robin_all' },
       // The people of "round robin: chosen people" and "fewest open leads".

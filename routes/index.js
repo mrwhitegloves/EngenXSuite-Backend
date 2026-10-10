@@ -19,6 +19,7 @@ import opportunitiesRoutes from './opportunities.routes.js';
 import { notesRouter, tasksRouter, timelineRouter } from './activities.routes.js';
 import notificationsRoutes from './notifications.routes.js';
 import { dashboardRouter, searchRouter } from './search.routes.js';
+import { callSettingsRouter, callsRouter, plivoWebhooksRouter } from './calls.routes.js';
 import {
   inboundLeadsRouter,
   leadAssignmentRouter,
@@ -40,6 +41,7 @@ router.use('/backups', backupsRoutes);
 router.use('/saved-views', savedViewsRoutes);
 // Before the general settings routes, so this path is found here.
 router.use('/settings/lead-assignment', leadAssignmentRouter);
+router.use('/settings/calls', callSettingsRouter);
 router.use('/settings', settingsRoutes);
 router.use('/realtime', realtimeRoutes);
 router.use('/accounts', accountsRoutes);
@@ -57,7 +59,9 @@ router.use('/tasks', tasksRouter);
 router.use('/notifications', notificationsRoutes);
 router.use('/search', searchRouter);
 router.use('/dashboard', dashboardRouter);
+router.use('/webhooks/plivo', plivoWebhooksRouter);
 router.use('/webhooks', webhooksRouter);
+router.use('/calls', callsRouter);
 router.use('/lead-forms', leadFormsRouter);
 router.use('/inbound-leads', inboundLeadsRouter);
 

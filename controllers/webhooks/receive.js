@@ -16,11 +16,19 @@ import { receiveWebhook } from '../../services/webhooks.service.js';
  * background job (services/webhooks.service.js). `req.rawBody` holds the exact bytes received,
  * for signature checks.
  *
+ * Some webhooks are a question that needs an answer in the provider's own format (Plivo asks
+ * "what shall I do with this call?" and wants XML). For those, pass `respond`: it writes the
+ * answer once the event is stored. It must be quick; slow work still belongs in the job.
+ *
  * @param {{ provider: string,
  *           verify: (req: import('express').Request) => boolean | Promise<boolean>,
- *           getEventId?: (req: import('express').Request) => string | undefined }} options
+ *           getEventId?: (req: import('express').Request) => string | undefined,
+ *           getPayload?: (req: import('express').Request) => unknown,
+ *           respond?: (req: import('express').Request, res: import('express').Response) => unknown,
+ *         }} options
+ *        getPayload: what to store as the event (default: the request body)
  */
-export function createWebhookHandler({ provider, verify, getEventId }) {
+export function createWebhookHandler({ provider, verify, getEventId, getPayload, respond }) {
   return async function handleWebhook(req, res, next) {
     let signatureValid = false;
     try {
@@ -36,10 +44,12 @@ export function createWebhookHandler({ provider, verify, getEventId }) {
       getEventId?.(req) || createHash('sha256').update(body).digest('hex'),
     ).slice(0, 200);
 
-    const result = await receiveWebhook({ provider, eventId, payload: req.body, signatureValid });
+    const payload = getPayload ? getPayload(req) : req.body;
+    const result = await receiveWebhook({ provider, eventId, payload, signatureValid });
     if (!result.accepted) {
       return next(createAppError('INVALID_SIGNATURE', 401, 'The signature check failed.'));
     }
+    if (respond) return respond(req, res);
     return res.status(200).json({ data: { received: true } });
   };
 }

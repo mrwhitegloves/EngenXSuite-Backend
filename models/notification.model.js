@@ -14,6 +14,7 @@ export const NOTIFICATION_TYPES = {
   task_overdue: 'A task of mine is overdue',
   lead_assigned: 'A lead is given to me',
   lead_received: 'A new lead comes in for me (Meta ads, website)',
+  call_missed: 'I missed a call',
 };
 export const NOTIFICATION_TYPE_KEYS = Object.keys(NOTIFICATION_TYPES);
 

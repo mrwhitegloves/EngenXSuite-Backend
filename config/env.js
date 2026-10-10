@@ -48,6 +48,16 @@ const envSchema = z.object({
   SENTRY_BACKEND: z.url().optional(),
   SENTRY_CLIENT: z.url().optional(),
 
+  // Plivo phone calls (docs/PLIVO.md). All three are needed, plus a public address of this
+  // server (API_PUBLIC_URL below) that Plivo can reach.
+  PLIVO_AUTH_ID: z.string().min(1).optional(),
+  PLIVO_AUTH_TOKEN: z.string().min(1).optional(),
+  // Our Plivo phone number, with the country code: 918035XXXXXX or +918035XXXXXX.
+  PLIVO_NUMBER: z.string().min(8).optional(),
+  // The public HTTPS address of THIS server, for providers that call it (Plivo). Not set: the
+  // same as REALTIME_URL. In development: the address of a tunnel.
+  API_PUBLIC_URL: z.url().optional(),
+
   // Meta lead ads (docs/META_LEADS.md). All three are needed; without them the webhook refuses
   // every request and no lead is fetched.
   //   META_APP_SECRET         the Meta app's secret: checks that a webhook really is from Meta
