@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import {
+  getBoard,
   getFormOptions,
   getLeadById,
   getLeads,
+  getStageHistory,
   patchLead,
   postLead,
   postStage,
@@ -13,6 +15,7 @@ import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import {
+  boardQuery,
   changeStageBody,
   createLeadBody,
   listLeadsQuery,
@@ -28,8 +31,15 @@ router.use(requireAuth);
 
 router.get('/', authorize(FEATURE, 'view'), validate({ query: listLeadsQuery }), getLeads);
 router.get('/form-options', authorize(FEATURE, 'view'), getFormOptions);
+router.get('/board', authorize(FEATURE, 'view'), validate({ query: boardQuery }), getBoard);
 router.post('/', authorize(FEATURE, 'create'), validate({ body: createLeadBody }), postLead);
 router.get('/:id', authorize(FEATURE, 'view'), validate({ params: idParams }), getLeadById);
+router.get(
+  '/:id/stage-history',
+  authorize(FEATURE, 'view'),
+  validate({ params: idParams }),
+  getStageHistory,
+);
 router.patch(
   '/:id',
   authorize(FEATURE, 'edit'),

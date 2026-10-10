@@ -4,6 +4,8 @@ import {
   deleteLead,
   getLead,
   getLeadFormOptions,
+  getLeadStageHistory,
+  getPipelineBoard,
   listLeads,
   updateLead,
 } from '../services/opportunities.service.js';
@@ -17,6 +19,16 @@ const context = (req) => ({ requestId: req.id });
 export async function getLeads(req, res) {
   const { items, pagination } = await listLeads(req.user, req.validated.query);
   sendList(res, items, pagination);
+}
+
+// GET /api/opportunities/board: the leads grouped by stage, for the pipeline board.
+export async function getBoard(req, res) {
+  sendOk(res, await getPipelineBoard(req.user, req.validated.query));
+}
+
+// GET /api/opportunities/:id/stage-history
+export async function getStageHistory(req, res) {
+  sendOk(res, await getLeadStageHistory(req.user, req.validated.params.id));
 }
 
 // GET /api/opportunities/form-options: the lists the lead form and the filters offer.

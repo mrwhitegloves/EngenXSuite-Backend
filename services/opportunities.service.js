@@ -18,6 +18,7 @@ import {
   Opportunity,
   RISK_LEVELS,
   SCOPE_LEVELS,
+  StageHistory,
 } from '../models/opportunity.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
 import { Plant } from '../models/plant.model.js';
@@ -333,8 +334,89 @@ export async function listLeads(actor, query) {
   return { items: rows.map((lead) => toListView(lead, lookups, actor)), pagination };
 }
 
+// The most cards one column of the board shows. A fuller column says how many more there are;
+// the table view (with pages) shows them all.
+export const BOARD_COLUMN_LIMIT = 50;
+
+/**
+ * The pipeline board: every active stage as a column, with the leads the person may see.
+ * The same filters as the list. Each column also says how many leads it has in all and what
+ * they are worth together.
+ * @param {object} query  Validated (validation/opportunities.js boardQuery)
+ */
+export async function getPipelineBoard(actor, query) {
+  const filter = leadsFilter(actor, query);
+  const stages = await PipelineStage.find({ isActive: true }).sort({ order: 1, _id: 1 }).lean();
+
+  const [totals, ...cardsPerStage] = await Promise.all([
+    Opportunity.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: '$stageId',
+          count: { $sum: 1 },
+          valuePaise: { $sum: { $ifNull: ['$estimatedValuePaise', 0] } },
+        },
+      },
+    ]),
+    ...stages.map((stage) =>
+      Opportunity.find({ $and: [filter, { stageId: stage._id }] })
+        // Longest in the stage first: those are the ones that need a push.
+        .sort({ stageEnteredAt: 1, _id: 1 })
+        .limit(BOARD_COLUMN_LIMIT)
+        .lean(),
+    ),
+  ]);
+  const totalOf = new Map(totals.map((total) => [String(total._id), total]));
+  const lookups = await loadLookups(cardsPerStage.flat());
+
+  return stages.map((stage, index) => ({
+    stage: {
+      id: String(stage._id),
+      name: stage.name,
+      type: stage.type,
+      color: stage.color ?? null,
+    },
+    count: totalOf.get(String(stage._id))?.count ?? 0,
+    valuePaise: totalOf.get(String(stage._id))?.valuePaise ?? 0,
+    leads: cardsPerStage[index].map((lead) => toListView(lead, lookups, actor)),
+  }));
+}
+
 export async function getLead(actor, leadId) {
   return detailOf(await loadLeadForAction(actor, leadId, 'view'), actor);
+}
+
+/** The stages a lead has been through, newest first. */
+export async function getLeadStageHistory(actor, leadId) {
+  const lead = await loadLeadForAction(actor, leadId, 'view');
+  const rows = await StageHistory.find({ opportunityId: lead._id })
+    .sort({ changedAt: -1, _id: -1 })
+    .lean();
+  const ids = (pick) => uniqueIds(rows.flatMap(pick));
+  const [stages, users] = await Promise.all([
+    PipelineStage.find({ _id: { $in: ids((row) => [row.fromStageId, row.toStageId]) } })
+      .select('name type')
+      .lean(),
+    User.find({ _id: { $in: ids((row) => [row.changedBy]) } })
+      .select('name')
+      .lean(),
+  ]);
+  const stageOf = new Map(stages.map((stage) => [String(stage._id), stage]));
+  const userOf = new Map(users.map((user) => [String(user._id), user]));
+  const stageView = (id) => {
+    const stage = id && stageOf.get(String(id));
+    return stage ? { id: String(stage._id), name: stage.name, type: stage.type } : null;
+  };
+  return rows.map((row) => ({
+    id: String(row._id),
+    from: stageView(row.fromStageId),
+    to: stageView(row.toStageId),
+    changedBy: named(userOf, row.changedBy),
+    changedAt: row.changedAt,
+    msInPreviousStage: row.msInPreviousStage ?? null,
+    via: row.via ?? null,
+  }));
 }
 
 /** What the lead form and the filters offer. */

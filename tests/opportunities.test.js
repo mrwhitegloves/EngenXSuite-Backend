@@ -537,3 +537,52 @@ describe('pipeline stages as a managed list', () => {
     );
   });
 });
+
+describe('the pipeline board and the stage history', () => {
+  it('groups the leads a person may see by stage, with counts and totals', async () => {
+    const mine = await makeLead(asAgent, { name: 'Mine', estimatedValuePaise: 100000 });
+    await makeLead(asAgent, { name: 'Mine too', estimatedValuePaise: 250000 });
+    await makeLead(asCeo, { name: 'Not mine', ownerId: String(otherAgent._id) });
+    await asAgent
+      .post(`/api/opportunities/${mine.id}/stage`)
+      .send({ stageId: stageId('proposal') });
+    await PipelineStage.updateOne({ key: 'pilot_poc' }, { $set: { isActive: false } });
+
+    const board = (await asAgent.get('/api/opportunities/board')).body.data;
+    // Every active stage is a column, in pipeline order; a switched-off stage is not.
+    expect(board).toHaveLength(14);
+    expect(board[0].stage).toMatchObject({ name: 'Lead', type: 'open' });
+    expect(board.map((column) => column.stage.name)).not.toContain('Pilot / PoC');
+    const column = (name) => board.find((item) => item.stage.name === name);
+    expect(column('Lead')).toMatchObject({ count: 1, valuePaise: 250000 });
+    expect(column('Lead').leads.map((lead) => lead.name)).toEqual(['Mine too']);
+    expect(column('Proposal')).toMatchObject({ count: 1, valuePaise: 100000 });
+    expect(column('Won')).toMatchObject({ count: 0, valuePaise: 0, leads: [] });
+
+    // The CEO sees the third lead as well; filters narrow the board like the list.
+    const forCeo = (await asCeo.get('/api/opportunities/board')).body.data;
+    expect(forCeo[0].count).toBe(2);
+    const filtered = (await asCeo.get(`/api/opportunities/board?ownerId=${otherAgent._id}`)).body
+      .data;
+    expect(filtered[0].leads.map((lead) => lead.name)).toEqual(['Not mine']);
+    expect((await asCeo.get('/api/opportunities/board?search=too')).body.data[0].count).toBe(1);
+    expect((await request(app).get('/api/opportunities/board')).status).toBe(401);
+  });
+
+  it('a lead shows the stages it went through; another person’s lead shows nothing', async () => {
+    const lead = await makeLead(asAgent);
+    await asAgent
+      .post(`/api/opportunities/${lead.id}/stage`)
+      .send({ stageId: stageId('qualified'), via: 'pipeline' });
+    const history = (await asAgent.get(`/api/opportunities/${lead.id}/stage-history`)).body.data;
+    expect(history).toHaveLength(2);
+    expect(history[0]).toMatchObject({
+      from: { name: 'Lead' },
+      to: { name: 'Qualified' },
+      changedBy: { name: 'Asha Agent' },
+      via: 'pipeline',
+    });
+    expect(history[1]).toMatchObject({ from: null, to: { name: 'Lead' } });
+    expect((await asOther.get(`/api/opportunities/${lead.id}/stage-history`)).status).toBe(404);
+  });
+});
