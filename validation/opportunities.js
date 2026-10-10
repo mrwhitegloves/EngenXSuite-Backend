@@ -152,5 +152,7 @@ const leadFilters = {
 };
 
 export const listLeadsQuery = z.object({ ...pagination, ...leadFilters });
+// The export takes the list's filters and sort; it has no pages.
+export const exportLeadsQuery = z.object(leadFilters);
 // The board takes the same filters; it has no pages and its own order.
 export const boardQuery = z.object(leadFilters).omit({ sort: true, stageId: true });

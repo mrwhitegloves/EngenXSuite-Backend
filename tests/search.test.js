@@ -173,7 +173,7 @@ describe('global search', () => {
     expect((await asCeo.get('/api/search?q=b')).status).toBe(400);
     expect((await asCeo.get('/api/search')).status).toBe(400);
     const found = await search(asCeo, '.*');
-    expect(found).toEqual({ accounts: [], contacts: [], leads: [], tasks: [] });
+    expect(found).toEqual({ accounts: [], contacts: [], plants: [], leads: [], tasks: [] });
   });
 });
 
@@ -226,5 +226,29 @@ describe('the dashboard', () => {
 
     expect((await asAgent.get('/api/dashboard/today')).status).toBe(200);
     expect((await request(app).get('/api/dashboard/today')).status).toBe(401);
+  });
+});
+
+describe('plants in the search', () => {
+  it('a plant is found by its name or city, only with a company the person may see', async () => {
+    await asAgent
+      .post(`/api/accounts/${mine.account.id}/plants`)
+      .send({ name: 'Chakan Forging Plant', plantType: 'Forging', location: { city: 'Chakan' } });
+    await asOther
+      .post(`/api/accounts/${theirs.account.id}/plants`)
+      .send({ name: 'Chakan Radar Plant' });
+
+    expect((await search(asAgent, 'chakan')).plants).toEqual([
+      expect.objectContaining({
+        name: 'Chakan Forging Plant',
+        accountId: mine.account.id,
+        detail: 'Bharat Forge · Forging · Chakan',
+      }),
+    ]);
+    expect(names((await search(asCeo, 'chakan')).plants)).toEqual([
+      'Chakan Forging Plant',
+      'Chakan Radar Plant',
+    ]);
+    expect(JSON.stringify(await search(asAgent, 'radar'))).not.toContain('Radar');
   });
 });

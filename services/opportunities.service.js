@@ -4,6 +4,7 @@ import { emitToAll } from '../infra/realtime.js';
 import { writeAudit } from '../lib/audit.js';
 import { can } from '../lib/can.js';
 import { planChanges, toUpdate } from '../lib/changes.js';
+import { toCsv } from '../lib/csv.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { buildFilter, buildSort, runListQuery } from '../lib/queryBuilder.js';
 import { scopeFilter } from '../lib/scopeFilter.js';
@@ -335,13 +336,13 @@ async function assertUsableLinks(accountId, data) {
 // ── Reading ─────────────────────────────────────────────────────────────────────────────────
 
 /** The database filter of the leads list: the person's scope first, then what they asked for. */
-function leadsFilter(actor, query) {
+function leadsFilter(actor, query, action = 'view') {
   const { search, range, from, to, ownerId, minValue, maxValue } = query;
   const value = {};
   if (minValue !== undefined) value.$gte = minValue;
   if (maxValue !== undefined) value.$lte = maxValue;
   return buildFilter({
-    scope: scopeFilter(actor, FEATURE),
+    scope: scopeFilter(actor, FEATURE, { action }),
     equals: {
       status: query.status,
       stageId: query.stageId,
@@ -420,6 +421,76 @@ export async function getPipelineBoard(actor, query) {
     valuePaise: totalOf.get(String(stage._id))?.valuePaise ?? 0,
     leads: cardsPerStage[index].map((lead) => toListView(lead, lookups, actor)),
   }));
+}
+
+// The most rows one export file holds. A larger result must be narrowed with filters.
+export const LEAD_EXPORT_ROW_LIMIT = 10000;
+
+const day = (value) =>
+  value
+    ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date(value))
+    : '';
+const EXPORT_COLUMNS = [
+  { header: 'Code', value: (row) => row.leadCode },
+  { header: 'Lead', value: (row) => row.name },
+  { header: 'Company', value: (row) => row.account?.name },
+  { header: 'Stage', value: (row) => row.stage?.name },
+  { header: 'Status', value: (row) => row.leadStatus?.name },
+  { header: 'Open / won / lost', value: (row) => row.status },
+  // Rupees, as a plain number a spreadsheet can add up.
+  {
+    header: 'Estimated value (INR)',
+    value: (row) => (row.estimatedValuePaise === null ? '' : row.estimatedValuePaise / 100),
+  },
+  { header: 'Chance (%)', value: (row) => row.probability },
+  { header: 'Expected close', value: (row) => day(row.expectedCloseDate) },
+  { header: 'Owner', value: (row) => row.owner?.name },
+  { header: 'Main contact', value: (row) => row.primaryContact?.name },
+  { header: 'Contact phone', value: (row) => row.primaryContact?.phone_number },
+  { header: 'Contact email', value: (row) => row.primaryContact?.email },
+  {
+    header: 'Solutions',
+    value: (row) => row.solutionCategories.map((item) => item.name).join('; '),
+  },
+  { header: 'Tags', value: (row) => row.tags.map((tag) => tag.name).join('; ') },
+  { header: 'Next action', value: (row) => row.nextAction?.text },
+  { header: 'Created', value: (row) => day(row.createdAt) },
+];
+
+/**
+ * The leads of the current filters as a CSV file. Only leads inside the person's "export"
+ * scope are in it; the export is written to the audit log.
+ * @param {object} query  Validated (validation/opportunities.js exportLeadsQuery)
+ */
+export async function exportLeads(actor, query, context = {}) {
+  const filter = leadsFilter(actor, query, 'export');
+  const total = await Opportunity.countDocuments(filter);
+  if (total > LEAD_EXPORT_ROW_LIMIT) {
+    throw conflict(
+      `These filters match ${total} leads. An export holds at most ${LEAD_EXPORT_ROW_LIMIT}; add a filter to narrow it.`,
+    );
+  }
+  const leads = await Opportunity.find(filter)
+    .sort(buildSort(query.sort, SORT_FIELDS, '-createdAt'))
+    .lean();
+  const lookups = await loadLookups(leads);
+  const rows = leads.map((lead) => toListView(lead, lookups, actor));
+
+  // The audit log needs one record id; an export is about the person who took the data out.
+  await writeAudit({
+    actor,
+    action: 'lead.exported',
+    entityType: 'users',
+    entityId: actor._id,
+    newValue: {
+      leads: rows.length,
+      filters: Object.fromEntries(
+        Object.entries(query).filter(([, value]) => value !== undefined && value !== ''),
+      ),
+    },
+    requestId: context.requestId,
+  });
+  return { csv: toCsv(EXPORT_COLUMNS, rows), count: rows.length };
 }
 
 export async function getLead(actor, leadId) {

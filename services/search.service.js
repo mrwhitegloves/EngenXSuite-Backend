@@ -5,6 +5,7 @@ import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
+import { Plant } from '../models/plant.model.js';
 import { Task } from '../models/task.model.js';
 
 // Global search (the box in the top bar): companies, people, leads and tasks in one answer.
@@ -34,7 +35,8 @@ function phonePattern(text) {
 /**
  * @param {object} actor
  * @param {{ q: string }} query  Validated: at least 2 characters
- * @returns {Promise<{ accounts: object[], contacts: object[], leads: object[], tasks: object[] }>}
+ * @returns {Promise<{ accounts: object[], contacts: object[], plants: object[], leads: object[],
+ *                     tasks: object[] }>}
  */
 export async function searchEverything(actor, { q }) {
   const text = containsPattern(q);
@@ -54,7 +56,7 @@ export async function searchEverything(actor, { q }) {
   ]);
   // The companies the person may see: needed to scope people (a person is seen with their company).
   const visibleAccountIds =
-    sees('contacts') && !isUnrestricted(accountScope)
+    (sees('contacts') || sees('plants')) && !isUnrestricted(accountScope)
       ? await Account.distinct('_id', and(accountScope, NOT_DELETED))
       : null;
 
@@ -80,6 +82,20 @@ export async function searchEverything(actor, { q }) {
             },
           ],
         };
+
+  // Plants are seen with their company, like people.
+  const plants =
+    sees('plants') && sees('accounts')
+      ? await Plant.find(
+          and(NOT_DELETED, visibleAccountIds ? { accountId: { $in: visibleAccountIds } } : null, {
+            $or: [{ name: text }, { 'location.city': text }, { plantType: text }],
+          }),
+        )
+          .select('name plantType location.city accountId')
+          .sort({ name: 1 })
+          .limit(SEARCH_LIMIT)
+          .lean()
+      : [];
 
   const [accounts, contacts, leads, tasks] = await Promise.all([
     sees('accounts')
@@ -143,7 +159,15 @@ export async function searchEverything(actor, { q }) {
   // Names for what the results point at.
   const ids = (items, field) => [...new Set(items.map((item) => item[field]).filter(Boolean))];
   const [accountNames, stageNames] = await Promise.all([
-    Account.find({ _id: { $in: [...ids(contacts, 'accountId'), ...ids(leads, 'accountId')] } })
+    Account.find({
+      _id: {
+        $in: [
+          ...ids(contacts, 'accountId'),
+          ...ids(leads, 'accountId'),
+          ...ids(plants, 'accountId'),
+        ],
+      },
+    })
       .select('name')
       .lean(),
     PipelineStage.find({ _id: { $in: ids(leads, 'stageId') } })
@@ -165,6 +189,15 @@ export async function searchEverything(actor, { q }) {
       accountId: String(contact.accountId),
       detail:
         [contact.designation, nameOf(accountNames, contact.accountId), contact.phone_number]
+          .filter(Boolean)
+          .join(' · ') || null,
+    })),
+    plants: plants.map((plant) => ({
+      id: String(plant._id),
+      name: plant.name,
+      accountId: String(plant.accountId),
+      detail:
+        [nameOf(accountNames, plant.accountId), plant.plantType, plant.location?.city]
           .filter(Boolean)
           .join(' · ') || null,
     })),

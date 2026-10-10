@@ -728,3 +728,53 @@ describe('editing the company and the main contact from the lead form', () => {
     expect(untouched.industry ?? null).toBeNull();
   });
 });
+
+describe('leads export', () => {
+  it('needs the export permission and holds only leads inside the person’s scope', async () => {
+    const mine = await makeLead(asAgent, {
+      name: '=HYPERLINK("http://evil.example")',
+      primaryContactId: contactId,
+      estimatedValuePaise: 250000050,
+      expectedCloseDate: '2026-12-31',
+    });
+    await makeLead(asCeo, { name: 'Of the other agent', ownerId: String(otherAgent._id) });
+    await asAgent
+      .post(`/api/opportunities/${mine.id}/stage`)
+      .send({ stageId: stageId('proposal') });
+
+    expect((await request(app).get('/api/opportunities/export')).status).toBe(401);
+    // An agent has no export permission.
+    expect((await asAgent.get('/api/opportunities/export')).status).toBe(403);
+
+    // The manager's team scope: the agent's lead, not the other agent's.
+    const response = await asManager.get('/api/opportunities/export?sort=name');
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('text/csv');
+    expect(response.headers['content-disposition']).toMatch(
+      /filename="leads-\d{4}-\d{2}-\d{2}\.csv"/,
+    );
+    const lines = response.text.slice(1).trim().split('\r\n');
+    expect(lines[0]).toBe(
+      'Code,Lead,Company,Stage,Status,Open / won / lost,Estimated value (INR),Chance (%),Expected close,Owner,Main contact,Contact phone,Contact email,Solutions,Tags,Next action,Created',
+    );
+    expect(lines).toHaveLength(2);
+    // The formula is made harmless (so is the "+" of a phone number: it stays text in a
+    // spreadsheet); the value is in rupees; the date is the Indian day.
+    expect(lines[1]).toContain(
+      'EGL-10001,"\'=HYPERLINK(""http://evil.example"")",Bharat Forge,Proposal,New Lead,open,2500000.5,50,2026-12-31,Asha Agent,Asha Verma,\'+919876543210',
+    );
+    expect(response.text).not.toContain('Of the other agent');
+
+    expect(
+      (await asCeo.get('/api/opportunities/export')).text.slice(1).trim().split('\r\n'),
+    ).toHaveLength(3);
+    expect(
+      (await asCeo.get(`/api/opportunities/export?stageId=${stageId('won')}`)).text
+        .slice(1)
+        .trim()
+        .split('\r\n'),
+    ).toHaveLength(1);
+    const entry = await AuditLog.findOne({ action: 'lead.exported' }).sort({ _id: 1 }).lean();
+    expect(entry.newValue).toMatchObject({ leads: 1, filters: { sort: 'name' } });
+  });
+});

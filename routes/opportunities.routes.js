@@ -4,6 +4,7 @@ import {
   getFormOptions,
   getLeadById,
   getLeads,
+  getLeadsExport,
   getStageHistory,
   patchLead,
   postLead,
@@ -12,12 +13,14 @@ import {
 } from '../controllers/opportunities.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
+import { createExportLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import {
   boardQuery,
   changeStageBody,
   createLeadBody,
+  exportLeadsQuery,
   listLeadsQuery,
   updateLeadBody,
 } from '../validation/opportunities.js';
@@ -32,6 +35,14 @@ router.use(requireAuth);
 router.get('/', authorize(FEATURE, 'view'), validate({ query: listLeadsQuery }), getLeads);
 router.get('/form-options', authorize(FEATURE, 'view'), getFormOptions);
 router.get('/board', authorize(FEATURE, 'view'), validate({ query: boardQuery }), getBoard);
+// Taking data out is its own permission, and is limited per person per hour.
+router.get(
+  '/export',
+  authorize(FEATURE, 'export'),
+  createExportLimiter(),
+  validate({ query: exportLeadsQuery }),
+  getLeadsExport,
+);
 router.post('/', authorize(FEATURE, 'create'), validate({ body: createLeadBody }), postLead);
 router.get('/:id', authorize(FEATURE, 'view'), validate({ params: idParams }), getLeadById);
 router.get(

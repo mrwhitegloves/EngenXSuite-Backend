@@ -2,6 +2,7 @@ import {
   changeLeadStage,
   createLead,
   deleteLead,
+  exportLeads,
   getLead,
   getLeadFormOptions,
   getLeadStageHistory,
@@ -29,6 +30,17 @@ export async function getBoard(req, res) {
 // GET /api/opportunities/:id/stage-history
 export async function getStageHistory(req, res) {
   sendOk(res, await getLeadStageHistory(req.user, req.validated.params.id));
+}
+
+// GET /api/opportunities/export: the leads of the current filters as a CSV file.
+export async function getLeadsExport(req, res) {
+  const { csv } = await exportLeads(req.user, req.validated.query, { requestId: req.id });
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  res
+    .status(200)
+    .set('Content-Type', 'text/csv; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="leads-${today}.csv"`)
+    .send(csv);
 }
 
 // GET /api/opportunities/form-options: the lists the lead form and the filters offer.
