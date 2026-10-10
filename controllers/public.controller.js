@@ -1,5 +1,6 @@
 import { getBranding } from '../services/settings.service.js';
 import { env } from '../config/env.js';
+import { pushPublicKey } from '../infra/push.js';
 import { sendOk } from '../lib/respond.js';
 
 // GET /api/public/branding: the product name for the sign-in page.
@@ -15,6 +16,8 @@ export async function getPublicConfig(req, res) {
   sendOk(res, {
     branding: await getBranding(),
     sentryDsn: env.SENTRY_CLIENT ?? null,
+    // The public half of the push key pair (null when push is not set up).
+    pushPublicKey: pushPublicKey(),
     environment: env.NODE_ENV,
   });
 }

@@ -18,3 +18,11 @@ export const notificationPreferencesBody = z
     types: z.record(z.string().max(60), z.boolean()).optional(),
   })
   .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to update' });
+
+// What the browser's own "subscribe" answers; sent to us as it is.
+export const pushSubscribeBody = z.object({
+  endpoint: z.url().max(1000),
+  keys: z.object({ p256dh: z.string().min(1).max(300), auth: z.string().min(1).max(100) }),
+});
+
+export const pushUnsubscribeBody = z.object({ endpoint: z.url().max(1000) });

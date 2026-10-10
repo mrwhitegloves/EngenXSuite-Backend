@@ -4,6 +4,8 @@ import {
   getNotifications,
   getUnreadCount,
   patchNotificationPreferences,
+  postPushSubscribe,
+  postPushUnsubscribe,
   postRead,
   postReadAll,
 } from '../controllers/notifications.controller.js';
@@ -13,6 +15,8 @@ import { idParams } from '../validation/common.js';
 import {
   listNotificationsQuery,
   notificationPreferencesBody,
+  pushSubscribeBody,
+  pushUnsubscribeBody,
 } from '../validation/notifications.js';
 
 // A person's own notifications. There is no permission to check: every signed-in user has
@@ -30,6 +34,8 @@ router.patch(
   patchNotificationPreferences,
 );
 router.post('/read-all', postReadAll);
+router.post('/push/subscribe', validate({ body: pushSubscribeBody }), postPushSubscribe);
+router.post('/push/unsubscribe', validate({ body: pushUnsubscribeBody }), postPushUnsubscribe);
 router.post('/:id/read', validate({ params: idParams }), postRead);
 
 export default router;

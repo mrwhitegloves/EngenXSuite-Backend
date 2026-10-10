@@ -1,5 +1,6 @@
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { logger } from '../infra/logger.js';
+import { isPushConfigured, sendPush } from '../infra/push.js';
 import { emitToUser } from '../infra/realtime.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { buildFilter, runListQuery } from '../lib/queryBuilder.js';
@@ -8,6 +9,7 @@ import {
   NOTIFICATION_TYPE_KEYS,
   Notification,
 } from '../models/notification.model.js';
+import { PushSubscription } from '../models/pushSubscription.model.js';
 import { User } from '../models/user.model.js';
 
 // Notifications. notify() is the ONLY way one is created: no other file writes the
@@ -51,6 +53,10 @@ export async function notify({ userId, type, title, body, link, dedupeKey, actor
 
     const notification = await Notification.create({ userId, type, title, body, link, dedupeKey });
     emitToUser(userId, SOCKET_EVENTS.notificationsChanged);
+    // Not waited for: a slow push service must not slow down the action that notifies.
+    pushToUser(userId, { title, body, link }).catch((error) =>
+      logger.error({ err: error }, 'Push to the user failed'),
+    );
     return toView(notification.toObject());
   } catch (error) {
     // The unique index: this person was told this already.
@@ -141,4 +147,56 @@ export async function updatePreferences(actor, changes) {
   if (Object.keys(set).length > 0) await User.updateOne({ _id: actor._id }, { $set: set });
   emitToUser(actor._id, SOCKET_EVENTS.meChanged);
   return getPreferences(actor);
+}
+
+// ── Browser push ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Send a push to every browser the person allowed. A browser that no longer accepts it (the
+ * permission was taken back, the browser was reset) is removed from the list.
+ * @returns {Promise<{ sent: number, removed: number }>}
+ */
+export async function pushToUser(userId, message) {
+  if (!isPushConfigured()) return { sent: 0, removed: 0 };
+  const subscriptions = await PushSubscription.find({ userId }).lean();
+  const outcomes = await Promise.all(
+    subscriptions.map((subscription) =>
+      sendPush({ endpoint: subscription.endpoint, keys: subscription.keys }, message),
+    ),
+  );
+  const idsWith = (outcome) =>
+    subscriptions.filter((_, index) => outcomes[index] === outcome).map((item) => item._id);
+  const gone = idsWith('gone');
+  if (gone.length > 0) await PushSubscription.deleteMany({ _id: { $in: gone } });
+  await PushSubscription.updateMany(
+    { _id: { $in: idsWith('sent') } },
+    { $set: { lastUsedAt: new Date() } },
+  );
+  return { sent: idsWith('sent').length, removed: gone.length };
+}
+
+/**
+ * Remember that this browser may show the person's notifications. The same browser signing in
+ * as someone else moves to that person: one browser never gets two people's notifications.
+ * @param {{ endpoint: string, keys: { p256dh: string, auth: string } }} subscription  Validated
+ */
+export async function subscribeToPush(actor, subscription, userAgent) {
+  await PushSubscription.updateOne(
+    { endpoint: subscription.endpoint },
+    {
+      $set: {
+        userId: actor._id,
+        keys: subscription.keys,
+        userAgent: String(userAgent ?? '').slice(0, 300),
+      },
+    },
+    { upsert: true },
+  );
+  return { subscribed: true };
+}
+
+/** Forget this browser (the person switched push off here, or signs out). */
+export async function unsubscribeFromPush(actor, { endpoint }) {
+  await PushSubscription.deleteOne({ endpoint, userId: actor._id });
+  return { subscribed: false };
 }

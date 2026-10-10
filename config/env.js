@@ -48,6 +48,14 @@ const envSchema = z.object({
   SENTRY_BACKEND: z.url().optional(),
   SENTRY_CLIENT: z.url().optional(),
 
+  // Browser push (notifications also when the tab is closed). A key pair made once with
+  // "npx web-push generate-vapid-keys". The public key is handed to the browser app; the
+  // private key stays here. Optional: without them push is off.
+  VAPID_PUBLIC_KEY: z.string().min(1).optional(),
+  VAPID_PRIVATE_KEY: z.string().min(1).optional(),
+  // Who runs the server, for the push services: "mailto:someone@company" or a web address.
+  VAPID_SUBJECT: z.string().min(1).default('mailto:admin@engenx.in'),
+
   // Redis: cache, rate-limit counters and queues. Optional: the app must run without it.
   REDIS_URL: z
     .string()

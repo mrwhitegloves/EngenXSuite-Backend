@@ -4,6 +4,8 @@ import {
   listNotifications,
   markAllRead,
   markRead,
+  subscribeToPush,
+  unsubscribeFromPush,
   updatePreferences,
 } from '../services/notifications.service.js';
 import { sendList, sendOk } from '../lib/respond.js';
@@ -40,4 +42,14 @@ export async function postReadAll(req, res) {
 // POST /api/notifications/:id/read
 export async function postRead(req, res) {
   sendOk(res, await markRead(req.user, req.validated.params.id));
+}
+
+// POST /api/notifications/push/subscribe: this browser may show my notifications.
+export async function postPushSubscribe(req, res) {
+  sendOk(res, await subscribeToPush(req.user, req.validated.body, req.get('user-agent')));
+}
+
+// POST /api/notifications/push/unsubscribe
+export async function postPushUnsubscribe(req, res) {
+  sendOk(res, await unsubscribeFromPush(req.user, req.validated.body));
 }
