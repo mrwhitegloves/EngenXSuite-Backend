@@ -18,6 +18,8 @@ export const SOCKET_EVENTS = {
   plantsChanged: 'plants.changed',
   // A tag was added, renamed, merged or deleted.
   tagsChanged: 'tags.changed',
+  // Sent to one user: an import of theirs moved on (progress, finished, undone).
+  importsChanged: 'imports.changed',
   // A status list managed in Settings changed (account statuses, lead statuses).
   statusListsChanged: 'status-lists.changed',
   // The product name or company name changed.

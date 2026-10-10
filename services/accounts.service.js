@@ -415,7 +415,9 @@ export async function getAccount(actor, accountId) {
 /**
  * @param {object} actor
  * @param {object} data  Already validated (validation/accounts.js createAccountBody)
- * @param {{ requestId?: string }} [context]
+ * @param {{ requestId?: string, importId?: unknown, importRow?: number, quiet?: boolean }} [context]
+ *        importId / importRow: set by the file import, which creates the account for a row.
+ *        quiet: do not announce the change to open screens (a batch announces once, at its end).
  */
 export async function createAccount(actor, data, context = {}) {
   const { confirmDuplicate, ownerId, assignedUserIds = [], statusId, ...rest } = data;
@@ -445,10 +447,11 @@ export async function createAccount(actor, data, context = {}) {
     statusId: chosenStatusId,
     ownerId: ownerId ?? actor._id,
     assignedUserIds,
-    source: 'manual',
     createdBy: actor._id,
-    // A person typed this account into a form: record who (decision 0013).
-    formFilledBy: actor._id,
+    ...(context.importId
+      ? { source: 'import', importId: context.importId, importRow: context.importRow }
+      : // A person typed this account into a form: record who (decision 0013).
+        { source: 'manual', formFilledBy: actor._id }),
   });
 
   await writeAudit({
@@ -463,7 +466,7 @@ export async function createAccount(actor, data, context = {}) {
     },
     requestId: context.requestId,
   });
-  emitToAll(SOCKET_EVENTS.accountsChanged);
+  if (!context.quiet) emitToAll(SOCKET_EVENTS.accountsChanged);
   return detailOf(account.toObject(), actor);
 }
 
@@ -601,7 +604,7 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
     });
   }
 
-  emitToAll(SOCKET_EVENTS.accountsChanged);
+  if (!context.quiet) emitToAll(SOCKET_EVENTS.accountsChanged);
   return detailOf(await Account.findById(account._id).lean(), actor);
 }
 
@@ -653,5 +656,5 @@ export async function deleteAccount(actor, accountId, context = {}) {
     oldValue: { accountCode: account.accountCode, name: account.name },
     requestId: context.requestId,
   });
-  emitToAll(SOCKET_EVENTS.accountsChanged);
+  if (!context.quiet) emitToAll(SOCKET_EVENTS.accountsChanged);
 }

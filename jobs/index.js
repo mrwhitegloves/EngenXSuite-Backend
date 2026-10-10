@@ -1,5 +1,6 @@
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { runBackup } from './backup.jobs.js';
+import { runImportJob, runImportUndoJob } from './imports.jobs.js';
 import { runPing } from './system.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
 
@@ -17,4 +18,6 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.databaseBackup]: runBackup,
   [JOB_NAMES.webhookProcess]: runWebhookEvent,
   [JOB_NAMES.webhookSweep]: runWebhookSweep,
+  [JOB_NAMES.importRun]: runImportJob,
+  [JOB_NAMES.importUndo]: runImportUndoJob,
 };

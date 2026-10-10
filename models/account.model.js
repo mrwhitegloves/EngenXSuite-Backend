@@ -111,7 +111,9 @@ const accountSchema = new mongoose.Schema(
     },
     // The inbound lead that created this account. Written only by the leads module.
     leadId: { type: ObjectId },
+    // The file import that created this account, and the row of the file it came from.
     importId: { type: ObjectId },
+    importRow: { type: Number },
     // A saved copy of "when did anything last happen here"; only the activity service writes it.
     lastActivityAt: { type: Date },
     createdBy: { type: ObjectId, ref: 'User' },

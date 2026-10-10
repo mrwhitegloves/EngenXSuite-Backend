@@ -14,6 +14,7 @@ import accountsRoutes from './accounts.routes.js';
 import statusListsRoutes from './statusLists.routes.js';
 import { contactsRouter, machinesRouter, plantUnitsRouter, plantsRouter } from './plants.routes.js';
 import tagsRoutes from './tags.routes.js';
+import importsRoutes from './imports.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -36,5 +37,6 @@ router.use('/plants', plantsRouter);
 router.use('/machines', machinesRouter);
 router.use('/plant-units', plantUnitsRouter);
 router.use('/tags', tagsRoutes);
+router.use('/imports', importsRoutes);
 
 export default router;

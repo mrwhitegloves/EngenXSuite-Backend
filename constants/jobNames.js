@@ -6,4 +6,6 @@ export const JOB_NAMES = {
   databaseBackup: 'backup.database',
   webhookProcess: 'webhook.process',
   webhookSweep: 'webhook.sweep',
+  importRun: 'import.run',
+  importUndo: 'import.undo',
 };

@@ -11,6 +11,7 @@ import { JOB_HANDLERS } from './jobs/index.js';
 import { registerSchedules } from './jobs/schedules.js';
 import { startRealtime, stopRealtime } from './infra/realtime.js';
 import { loadRequestUser } from './services/auth.service.js';
+import { resumeInterruptedImports } from './services/imports.service.js';
 import { verifyTicket } from './lib/realtimeTicket.js';
 import { flushSentry, initSentry, reportError } from './infra/sentry.js';
 import { createApp } from './app.js';
@@ -42,6 +43,10 @@ async function start() {
   startWorkers(JOB_HANDLERS);
   // Jobs that run by the clock (production only). Not awaited: it waits for Redis by itself.
   registerSchedules();
+  // An import that was half done when the server stopped goes on from its next row.
+  resumeInterruptedImports().catch((error) =>
+    logger.error({ err: error }, 'Interrupted imports could not be looked up'),
+  );
 
   // Cloud Run sends SIGTERM before stopping an instance. Stop taking new requests,
   // let running ones finish, then close the database connection.

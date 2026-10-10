@@ -56,6 +56,7 @@ const contactSchema = new mongoose.Schema(
     // A saved copy of "when did we last talk"; only the activity service writes it.
     lastInteractionAt: { type: Date },
     source: { type: String, enum: CONTACT_SOURCES, default: 'manual' },
+    // The file import that created this contact.
     importId: { type: ObjectId },
     createdBy: { type: ObjectId, ref: 'User' },
     // The user who filled in the form that created this contact by hand (decision 0013).
@@ -72,5 +73,6 @@ contactSchema.index({ alt_phone_number: 1 }, { sparse: true });
 contactSchema.index({ email: 1 }, { sparse: true });
 contactSchema.index({ ownerId: 1 });
 contactSchema.index({ stakeholderRole: 1 });
+contactSchema.index({ importId: 1 }, { sparse: true });
 
 export const Contact = mongoose.models.Contact ?? mongoose.model('Contact', contactSchema);

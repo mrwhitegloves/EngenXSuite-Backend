@@ -101,7 +101,8 @@ async function assertNotAlreadyThere(accountId, people, exceptContactId) {
  * @param {object} actor
  * @param {string} accountId
  * @param {object[]} people  Each already validated (validation/contacts.js createContactBody)
- * @param {{ requestId?: string }} [context]
+ * @param {{ requestId?: string, importId?: unknown, quiet?: boolean }} [context]
+ *        importId: set by the file import. quiet: do not announce the change to open screens.
  */
 export async function createContacts(actor, accountId, people, context = {}) {
   const account = await loadAccountForAction(actor, accountId, 'view');
@@ -118,9 +119,10 @@ export async function createContacts(actor, accountId, people, context = {}) {
       ...given(person),
       accountId: account._id,
       ownerId: actor._id,
-      source: 'manual',
       createdBy: actor._id,
-      formFilledBy: actor._id,
+      ...(context.importId
+        ? { source: 'import', importId: context.importId }
+        : { source: 'manual', formFilledBy: actor._id }),
     })),
   );
   for (const contact of contacts) {
@@ -133,7 +135,7 @@ export async function createContacts(actor, accountId, people, context = {}) {
       requestId: context.requestId,
     });
   }
-  emitToAll(SOCKET_EVENTS.contactsChanged);
+  if (!context.quiet) emitToAll(SOCKET_EVENTS.contactsChanged);
   const names = await userNames([actor._id]);
   const tags = await loadTagsById(contacts.flatMap((contact) => contact.tagIds ?? []));
   return contacts.map((contact) => toView(contact.toObject(), names, tags));
@@ -217,7 +219,7 @@ export async function updateContact(actor, contactId, changes, context = {}) {
       newValue: plan.newValue,
       requestId: context.requestId,
     });
-    emitToAll(SOCKET_EVENTS.contactsChanged);
+    if (!context.quiet) emitToAll(SOCKET_EVENTS.contactsChanged);
   }
   const saved = await Contact.findById(contact._id).lean();
   return toView(
@@ -254,6 +256,7 @@ export async function deleteContact(actor, contactId, context = {}) {
     oldValue: { name: contact.name, accountId: String(contact.accountId) },
     requestId: context.requestId,
   });
+  if (context.quiet) return;
   emitToAll(SOCKET_EVENTS.contactsChanged);
   emitToAll(SOCKET_EVENTS.plantsChanged);
 }
