@@ -1,10 +1,12 @@
 import { Contact } from '../models/contact.model.js';
+import { PLANT_HEAD_FIELDS, Plant } from '../models/plant.model.js';
 import { User } from '../models/user.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
 import { writeAudit } from '../lib/audit.js';
 import { can } from '../lib/can.js';
-import { conflict, forbidden } from '../lib/errors.js';
+import { planChanges, toUpdate } from '../lib/changes.js';
+import { conflict, forbidden, notFound } from '../lib/errors.js';
 import { loadAccountForAction } from './accounts.service.js';
 
 // Contacts: the people at a customer company. A contact is reached through its account:
@@ -41,6 +43,7 @@ function toView(contact, names) {
     relationshipStrength: contact.relationshipStrength ?? null,
     consent: {
       whatsappOptIn: contact.consent?.whatsappOptIn ?? false,
+      whatsappOptInAt: contact.consent?.whatsappOptInAt ?? null,
       doNotCall: contact.consent?.doNotCall ?? false,
     },
     source: contact.source,
@@ -59,7 +62,7 @@ const given = (data) =>
  * The same phone number or email twice among the people of one company is almost always a
  * mistake (the same person entered twice).
  */
-async function assertNotAlreadyThere(accountId, people) {
+async function assertNotAlreadyThere(accountId, people, exceptContactId) {
   const phones = people.flatMap((person) => [person.phone_number, person.alt_phone_number]);
   const emails = people.map((person) => person.email);
   const repeated = (values) => {
@@ -80,9 +83,10 @@ async function assertNotAlreadyThere(accountId, people) {
   }
   if (filledEmails.length) filters.push({ email: { $in: filledEmails } });
   if (filters.length === 0) return;
-  const existing = await Contact.findOne({ accountId, ...NOT_DELETED, $or: filters })
-    .select('name')
-    .lean();
+  const filter = { accountId, ...NOT_DELETED, $or: filters };
+  // When a contact is edited, it is not a duplicate of itself.
+  if (exceptContactId) filter._id = { $ne: exceptContactId };
+  const existing = await Contact.findOne(filter).select('name').lean();
   if (existing) {
     throw conflict(
       `This company already has a contact with that phone or email: "${existing.name}".`,
@@ -139,4 +143,107 @@ export async function listAccountContacts(actor, accountId) {
     .lean();
   const names = await userNames(contacts.map((contact) => contact.formFilledBy));
   return contacts.map((contact) => toView(contact, names));
+}
+
+/**
+ * Load one contact for an action. A contact of an account the actor may not see answers
+ * "not found", exactly like the account itself.
+ */
+async function loadContactForAction(actor, contactId, action) {
+  const contact = await Contact.findOne({ _id: contactId, ...NOT_DELETED }).lean();
+  if (!contact) throw notFound('Contact not found');
+  // Throws 404 when the account is outside the actor's scope (or deleted).
+  await loadAccountForAction(actor, contact.accountId, 'view').catch(() => {
+    throw notFound('Contact not found');
+  });
+  if (!can(actor, action, { feature: FEATURE })) {
+    throw forbidden('You do not have permission to do this with contacts.');
+  }
+  return contact;
+}
+
+/**
+ * Change a contact. A null value clears a field. Consent changes are recorded with the time.
+ * @param {object} actor
+ * @param {string} contactId
+ * @param {object} changes  Already validated (validation/contacts.js updateContactBody)
+ * @param {{ requestId?: string }} [context]
+ */
+export async function updateContact(actor, contactId, changes, context = {}) {
+  const contact = await loadContactForAction(actor, contactId, 'edit');
+  const { consent: consentChanges = {}, ...fieldChanges } = changes;
+
+  const plan = planChanges(contact, fieldChanges);
+  // The same person entered twice: checked with the values the contact would have afterwards.
+  if (plan.fields.some((field) => ['phone_number', 'alt_phone_number', 'email'].includes(field))) {
+    await assertNotAlreadyThere(contact.accountId, [{ ...contact, ...fieldChanges }], contact._id);
+  }
+
+  const now = new Date();
+  const wasOptedIn = contact.consent?.whatsappOptIn ?? false;
+  const wasDoNotCall = contact.consent?.doNotCall ?? false;
+  if (consentChanges.whatsappOptIn !== undefined && consentChanges.whatsappOptIn !== wasOptedIn) {
+    plan.fields.push('consent.whatsappOptIn');
+    plan.set['consent.whatsappOptIn'] = consentChanges.whatsappOptIn;
+    // When they agreed, and when they withdrew: both moments are kept.
+    plan.set[
+      consentChanges.whatsappOptIn ? 'consent.whatsappOptInAt' : 'consent.whatsappOptOutAt'
+    ] = now;
+    plan.oldValue.whatsappOptIn = wasOptedIn;
+    plan.newValue.whatsappOptIn = consentChanges.whatsappOptIn;
+  }
+  if (consentChanges.doNotCall !== undefined && consentChanges.doNotCall !== wasDoNotCall) {
+    plan.fields.push('consent.doNotCall');
+    plan.set['consent.doNotCall'] = consentChanges.doNotCall;
+    plan.oldValue.doNotCall = wasDoNotCall;
+    plan.newValue.doNotCall = consentChanges.doNotCall;
+  }
+
+  const update = toUpdate(plan);
+  if (update) {
+    await Contact.updateOne({ _id: contact._id }, update, { runValidators: true });
+    await writeAudit({
+      actor,
+      action: 'contact.updated',
+      entityType: 'contacts',
+      entityId: contact._id,
+      oldValue: plan.oldValue,
+      newValue: plan.newValue,
+      requestId: context.requestId,
+    });
+    emitToAll(SOCKET_EVENTS.contactsChanged);
+  }
+  const saved = await Contact.findById(contact._id).lean();
+  return toView(saved, await userNames([saved.formFilledBy]));
+}
+
+/**
+ * Soft delete a contact. Plants that named this person as a head or in their IT/OT team are
+ * cleared in the same step, so no plant points at a contact that is gone.
+ */
+export async function deleteContact(actor, contactId, context = {}) {
+  const contact = await loadContactForAction(actor, contactId, 'delete');
+
+  await Contact.updateOne(
+    { _id: contact._id },
+    { $set: { deletedAt: new Date(), deletedBy: actor._id } },
+  );
+  for (const field of PLANT_HEAD_FIELDS) {
+    await Plant.updateMany({ [field]: contact._id }, { $unset: { [field]: '' } });
+  }
+  await Plant.updateMany(
+    { itOtContactIds: contact._id },
+    { $pull: { itOtContactIds: contact._id } },
+  );
+
+  await writeAudit({
+    actor,
+    action: 'contact.deleted',
+    entityType: 'contacts',
+    entityId: contact._id,
+    oldValue: { name: contact.name, accountId: String(contact.accountId) },
+    requestId: context.requestId,
+  });
+  emitToAll(SOCKET_EVENTS.contactsChanged);
+  emitToAll(SOCKET_EVENTS.plantsChanged);
 }

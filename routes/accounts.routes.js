@@ -20,6 +20,8 @@ import {
   updateAccountBody,
 } from '../validation/accounts.js';
 import { createContactBody } from '../validation/contacts.js';
+import { createPlantBody } from '../validation/plants.js';
+import { getAccountPlants, postAccountPlant } from '../controllers/plants.controller.js';
 import { idParams } from '../validation/common.js';
 
 // Accounts (customer companies). authorize() answers "may this person do this at all";
@@ -56,6 +58,19 @@ router.post(
   authorize('contacts', 'create'),
   validate({ params: idParams, body: createContactBody }),
   postAccountContact,
+);
+// The plants of an account.
+router.get(
+  '/:id/plants',
+  authorize('plants', 'view'),
+  validate({ params: idParams }),
+  getAccountPlants,
+);
+router.post(
+  '/:id/plants',
+  authorize('plants', 'create'),
+  validate({ params: idParams, body: createPlantBody }),
+  postAccountPlant,
 );
 router.patch(
   '/:id',

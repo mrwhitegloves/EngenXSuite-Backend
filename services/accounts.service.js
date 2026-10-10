@@ -5,6 +5,8 @@ import {
   RELATIONSHIP_HEALTH,
 } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
+import { Machine } from '../models/machine.model.js';
+import { Plant } from '../models/plant.model.js';
 import { AccountStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
@@ -540,6 +542,10 @@ export async function deleteAccount(actor, accountId, context = {}) {
   await Account.updateOne({ _id: account._id }, { $set: deletion });
   // Its people are hidden with it (and nothing else can reach them without the account).
   await Contact.updateMany({ accountId: account._id, deletedAt: null }, { $set: deletion });
+  // … and so are its plants and their machines.
+  const plantIds = await Plant.distinct('_id', { accountId: account._id, deletedAt: null });
+  await Plant.updateMany({ _id: { $in: plantIds } }, { $set: deletion });
+  await Machine.updateMany({ plantId: { $in: plantIds }, deletedAt: null }, { $set: deletion });
   await writeAudit({
     actor,
     action: 'account.deleted',

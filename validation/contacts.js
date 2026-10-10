@@ -40,6 +40,18 @@ export const contactFields = {
   relationshipStrength: oneToFive,
 };
 
+// What the person allowed. Changed only on purpose, so it is its own small object.
+const consent = z.object({ whatsappOptIn: z.boolean(), doNotCall: z.boolean() }).partial();
+
+export const updateContactBody = z
+  .object({
+    ...Object.fromEntries(
+      Object.entries(contactFields).map(([key, schema]) => [key, schema.optional()]),
+    ),
+    consent: consent.optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to update' });
+
 export const createContactBody = z.object({
   ...Object.fromEntries(
     Object.entries(contactFields).map(([key, schema]) => [key, schema.optional()]),

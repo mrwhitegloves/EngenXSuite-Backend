@@ -12,6 +12,7 @@ import settingsRoutes from './settings.routes.js';
 import realtimeRoutes from './realtime.routes.js';
 import accountsRoutes from './accounts.routes.js';
 import statusListsRoutes from './statusLists.routes.js';
+import { contactsRouter, machinesRouter, plantsRouter } from './plants.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -29,5 +30,8 @@ router.use('/settings', settingsRoutes);
 router.use('/realtime', realtimeRoutes);
 router.use('/accounts', accountsRoutes);
 router.use('/status-lists', statusListsRoutes);
+router.use('/contacts', contactsRouter);
+router.use('/plants', plantsRouter);
+router.use('/machines', machinesRouter);
 
 export default router;
