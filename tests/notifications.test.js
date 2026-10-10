@@ -114,6 +114,8 @@ describe('preferences', () => {
       ['task_reminder', true],
       ['task_overdue', true],
       ['lead_assigned', true],
+      // Added with the Meta lead ads (2026-10-11): a new lead that comes in for me.
+      ['lead_received', true],
     ]);
 
     await asAgent.patch('/api/notifications/preferences').send({ enabled: false });

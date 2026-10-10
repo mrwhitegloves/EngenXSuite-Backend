@@ -412,11 +412,25 @@ export async function getAccount(actor, accountId) {
   return detailOf(await loadAccountForAction(actor, accountId, 'view'), actor);
 }
 
+/** Where a new account came from: a file import, an inbound lead, or a person's form. */
+function originOf(actor, context) {
+  if (context.importId) {
+    return { source: 'import', importId: context.importId, importRow: context.importRow };
+  }
+  if (context.inbound) {
+    const { source, leadId, sourceDetail } = context.inbound;
+    return { source, leadId, ...(sourceDetail ? { sourceDetail } : {}) };
+  }
+  // A person typed this account into a form: record who (decision 0013).
+  return { source: 'manual', formFilledBy: actor._id };
+}
+
 /**
  * @param {object} actor
  * @param {object} data  Already validated (validation/accounts.js createAccountBody)
  * @param {{ requestId?: string, importId?: unknown, importRow?: number, quiet?: boolean }} [context]
  *        importId / importRow: set by the file import, which creates the account for a row.
+ *        inbound: set by the inbound-lead flow: { source, leadId, sourceDetail }.
  *        quiet: do not announce the change to open screens (a batch announces once, at its end).
  */
 export async function createAccount(actor, data, context = {}) {
@@ -445,13 +459,11 @@ export async function createAccount(actor, data, context = {}) {
     accountCode: await nextCode(CODE_SERIES.account),
     nameKey,
     statusId: chosenStatusId,
-    ownerId: ownerId ?? actor._id,
+    // null (not "left out") means: nobody yet. Only the inbound-lead flow asks for that.
+    ownerId: ownerId === null ? undefined : (ownerId ?? actor._id),
     assignedUserIds,
-    createdBy: actor._id,
-    ...(context.importId
-      ? { source: 'import', importId: context.importId, importRow: context.importRow }
-      : // A person typed this account into a form: record who (decision 0013).
-        { source: 'manual', formFilledBy: actor._id }),
+    createdBy: actor._id ?? undefined,
+    ...originOf(actor, context),
   });
 
   await writeAudit({
@@ -462,7 +474,7 @@ export async function createAccount(actor, data, context = {}) {
     newValue: {
       accountCode: account.accountCode,
       name: account.name,
-      ownerId: String(account.ownerId),
+      ownerId: account.ownerId ? String(account.ownerId) : null,
     },
     requestId: context.requestId,
   });

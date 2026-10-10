@@ -570,7 +570,9 @@ export async function getLeadFormOptions(actor) {
 /**
  * @param {object} actor
  * @param {object} data  Already validated (validation/opportunities.js createLeadBody)
- * @param {{ requestId?: string, via?: string }} [context]
+ * @param {{ requestId?: string, via?: string, inbound?: object }} [context]
+ *        inbound: set by the inbound-lead flow: { leadId, sourceDetail }. It tells the owner
+ *        itself ("a new lead came in"), so the usual "X gave you a lead" notice is left out.
  */
 export async function createLead(actor, data, context = {}) {
   const { accountId, stageId, ownerId, assignedUserIds = [], leadStatusId, source, ...rest } = data;
@@ -606,8 +608,10 @@ export async function createLead(actor, data, context = {}) {
     ownerId: ownerId === undefined ? actor._id : ownerId,
     assignedUserIds,
     source: source ?? 'manual',
-    createdBy: actor._id,
-    formFilledBy: actor._id,
+    createdBy: actor._id ?? undefined,
+    ...(context.inbound
+      ? { leadId: context.inbound.leadId, sourceDetail: context.inbound.sourceDetail }
+      : { formFilledBy: actor._id }),
   };
 
   // The lead and the first row of its stage history are saved together.
@@ -640,7 +644,9 @@ export async function createLead(actor, data, context = {}) {
     refCollection: 'opportunities',
     refId: lead._id,
   });
-  await notifyAssigned(lead, [lead.ownerId, ...lead.assignedUserIds], actor);
+  if (!context.inbound) {
+    await notifyAssigned(lead, [lead.ownerId, ...lead.assignedUserIds], actor);
+  }
   announce();
   return detailOf(lead.toObject(), actor);
 }

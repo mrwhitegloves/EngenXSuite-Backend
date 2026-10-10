@@ -48,6 +48,19 @@ const envSchema = z.object({
   SENTRY_BACKEND: z.url().optional(),
   SENTRY_CLIENT: z.url().optional(),
 
+  // Meta lead ads (docs/META_LEADS.md). All three are needed; without them the webhook refuses
+  // every request and no lead is fetched.
+  //   META_APP_SECRET         the Meta app's secret: checks that a webhook really is from Meta
+  //   META_VERIFY_TOKEN       any long random text; typed once into Meta when the webhook is set up
+  //   META_PAGE_ACCESS_TOKEN  a long-lived Page token with the lead permissions: fetches the answers
+  META_APP_SECRET: z.string().min(1).optional(),
+  META_VERIFY_TOKEN: z.string().min(1).optional(),
+  META_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
+  META_GRAPH_VERSION: z
+    .string()
+    .regex(/^vd+.d+$/)
+    .default('v21.0'),
+
   // Browser push (notifications also when the tab is closed). A key pair made once with
   // "npx web-push generate-vapid-keys". The public key is handed to the browser app; the
   // private key stays here. Optional: without them push is off.

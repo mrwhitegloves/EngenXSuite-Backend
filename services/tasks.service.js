@@ -303,7 +303,12 @@ async function onTimeline(task, actor, subtype, title, occurredAt) {
   });
 }
 
-/** @param {object} data  Already validated (validation/tasks.js createTaskBody) */
+/**
+ * @param {object} data  Already validated (validation/tasks.js createTaskBody)
+ * @param {{ requestId?: string, origin?: { source: string, sourceRef?: object } }} [context]
+ *        origin: for a task the system makes (a first follow-up for a new lead). Its maker tells
+ *        the assignee itself, so the usual "X gave you a task" notice is left out.
+ */
 export async function createTask(actor, data, context = {}) {
   const { assigneeId = String(actor._id), opportunityId, accountId, contactId, ...rest } = data;
   await assertAssignable(actor, assigneeId);
@@ -313,7 +318,14 @@ export async function createTask(actor, data, context = {}) {
     Object.entries(rest).filter(([, value]) => value !== null && value !== undefined),
   );
   const task = (
-    await Task.create({ ...fields, ...links, assigneeId, createdBy: actor._id, source: 'manual' })
+    await Task.create({
+      ...fields,
+      ...links,
+      assigneeId,
+      createdBy: actor._id ?? undefined,
+      source: 'manual',
+      ...context.origin,
+    })
   ).toObject();
 
   await writeAudit({
@@ -325,7 +337,7 @@ export async function createTask(actor, data, context = {}) {
     requestId: context.requestId,
   });
   await onTimeline(task, actor, 'task_created', `Task: ${task.title}`, task.createdAt);
-  await notifyAssignee(task, actor);
+  if (!context.origin) await notifyAssignee(task, actor);
   announce();
   return viewOf(task, actor);
 }

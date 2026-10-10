@@ -103,6 +103,7 @@ async function assertNotAlreadyThere(accountId, people, exceptContactId) {
  * @param {object[]} people  Each already validated (validation/contacts.js createContactBody)
  * @param {{ requestId?: string, importId?: unknown, quiet?: boolean }} [context]
  *        importId: set by the file import. quiet: do not announce the change to open screens.
+ *        inbound: set by the inbound-lead flow: { source, ownerId }.
  */
 export async function createContacts(actor, accountId, people, context = {}) {
   const account = await loadAccountForAction(actor, accountId, 'view');
@@ -118,11 +119,12 @@ export async function createContacts(actor, accountId, people, context = {}) {
     people.map((person) => ({
       ...given(person),
       accountId: account._id,
-      ownerId: actor._id,
-      createdBy: actor._id,
+      createdBy: actor._id ?? undefined,
       ...(context.importId
-        ? { source: 'import', importId: context.importId }
-        : { source: 'manual', formFilledBy: actor._id }),
+        ? { ownerId: actor._id, source: 'import', importId: context.importId }
+        : context.inbound
+          ? { ownerId: context.inbound.ownerId ?? undefined, source: context.inbound.source }
+          : { ownerId: actor._id, source: 'manual', formFilledBy: actor._id }),
     })),
   );
   for (const contact of contacts) {

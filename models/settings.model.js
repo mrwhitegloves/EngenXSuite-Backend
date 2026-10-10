@@ -4,6 +4,15 @@ import mongoose from 'mongoose';
 // needs them (company details, AI limits, call settings, lead assignment).
 // Schema only: no methods (decision 0005).
 
+// How a lead that arrives by itself gets its owner (services/leadAssignment.service.js).
+export const ASSIGNMENT_MODES = [
+  'off',
+  'round_robin_all',
+  'round_robin_selected',
+  'fixed',
+  'least_open',
+];
+
 const settingsSchema = new mongoose.Schema(
   {
     key: { type: String, required: true, unique: true, default: 'app' },
@@ -15,6 +24,17 @@ const settingsSchema = new mongoose.Schema(
       logoLightFileId: { type: mongoose.Schema.Types.ObjectId, default: null },
       logoDarkFileId: { type: mongoose.Schema.Types.ObjectId, default: null },
       faviconFileId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    },
+    leadAssignment: {
+      mode: { type: String, enum: ASSIGNMENT_MODES, default: 'round_robin_all' },
+      // The people of "round robin: chosen people" and "fewest open leads".
+      userIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
+      // The person of "always the same person".
+      fixedUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      // People who get no new lead for now (on leave).
+      awayUserIds: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
+      // Who got the last lead: the next one goes to the person after them.
+      lastAssignedUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     },
   },
   { timestamps: true },

@@ -19,6 +19,12 @@ import opportunitiesRoutes from './opportunities.routes.js';
 import { notesRouter, tasksRouter, timelineRouter } from './activities.routes.js';
 import notificationsRoutes from './notifications.routes.js';
 import { dashboardRouter, searchRouter } from './search.routes.js';
+import {
+  inboundLeadsRouter,
+  leadAssignmentRouter,
+  leadFormsRouter,
+  webhooksRouter,
+} from './inboundLeads.routes.js';
 
 // Every API route file is mounted here, under /api. Add one line per feature.
 const router = Router();
@@ -32,6 +38,8 @@ router.use('/jobs', jobsRoutes);
 router.use('/audit-logs', auditRoutes);
 router.use('/backups', backupsRoutes);
 router.use('/saved-views', savedViewsRoutes);
+// Before the general settings routes, so this path is found here.
+router.use('/settings/lead-assignment', leadAssignmentRouter);
 router.use('/settings', settingsRoutes);
 router.use('/realtime', realtimeRoutes);
 router.use('/accounts', accountsRoutes);
@@ -49,5 +57,8 @@ router.use('/tasks', tasksRouter);
 router.use('/notifications', notificationsRoutes);
 router.use('/search', searchRouter);
 router.use('/dashboard', dashboardRouter);
+router.use('/webhooks', webhooksRouter);
+router.use('/lead-forms', leadFormsRouter);
+router.use('/inbound-leads', inboundLeadsRouter);
 
 export default router;

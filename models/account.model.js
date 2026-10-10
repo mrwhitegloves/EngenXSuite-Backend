@@ -53,7 +53,9 @@ const accountSchema = new mongoose.Schema(
     billingAddress: { type: addressSchema, default: undefined },
 
     // Who is responsible, and who else works on it. These two fields decide who may see it.
-    ownerId: { type: ObjectId, ref: 'User', required: true },
+    // Empty only for a company that came in with an inbound lead nobody was given yet
+    // (lead assignment switched off): the CEO and managers see it and assign it.
+    ownerId: { type: ObjectId, ref: 'User' },
     assignedUserIds: { type: [{ type: ObjectId, ref: 'User' }], default: [] },
 
     // Where the company stands. The list is managed in Settings (models/statusLists.model.js);

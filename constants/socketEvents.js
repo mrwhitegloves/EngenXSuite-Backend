@@ -24,6 +24,8 @@ export const SOCKET_EVENTS = {
   notificationsChanged: 'notifications.changed',
   // A task was added, changed, completed or deleted.
   tasksChanged: 'tasks.changed',
+  // An inbound lead arrived or was processed, or a lead form or the assignment rule changed.
+  inboundLeadsChanged: 'inbound-leads.changed',
   // A tag was added, renamed, merged or deleted.
   tagsChanged: 'tags.changed',
   // Sent to one user: an import of theirs moved on (progress, finished, undone).
