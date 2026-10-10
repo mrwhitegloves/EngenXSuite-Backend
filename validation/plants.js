@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { DATA_AVAILABILITY, MACHINE_CRITICALITY } from '../models/machine.model.js';
 import { DIGITAL_MATURITY } from '../models/plant.model.js';
+import { UNIT_TYPES } from '../models/plantUnit.model.js';
 import { objectId } from './common.js';
 
 // Short free text. An empty text clears the field (null).
@@ -55,6 +56,8 @@ export const updatePlantBody = z.object(optional(plantFields)).refine(...notEmpt
 const thisYear = new Date().getFullYear();
 const machineFields = {
   name: z.string().trim().min(1, 'Enter the machine name').max(120),
+  // The department or line it stands in; null: directly in the plant.
+  unitId: objectId.nullable(),
   // "32 CNC machines" is one row with quantity 32.
   quantity: z.number().int('Use a whole number').min(1, 'At least 1').max(100000),
   machineType: text(),
@@ -74,6 +77,17 @@ const machineFields = {
   dataAvailability: z.enum(DATA_AVAILABILITY).nullable(),
   existingSensors: z.array(z.string().trim().min(1).max(100)).max(30),
 };
+
+const unitName = z.string().trim().min(1, 'Enter a name').max(120);
+export const createUnitBody = z.object({
+  type: z.enum(UNIT_TYPES),
+  name: unitName,
+  // For a line: the department it belongs to.
+  parentId: objectId.nullable().optional(),
+});
+export const updateUnitBody = z
+  .object({ name: unitName.optional(), parentId: objectId.nullable().optional() })
+  .refine(...notEmpty);
 
 export const createMachineBody = z.object({
   ...optional(machineFields),

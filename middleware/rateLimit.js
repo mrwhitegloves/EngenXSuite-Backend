@@ -103,6 +103,18 @@ export function createPasswordResetLimiter({ limit = 5, windowMs = 15 * MINUTE_M
   });
 }
 
+/** Exports (data leaving the system): 10 per hour per signed-in user (Section 75). */
+export function createExportLimiter({ limit = 10, windowMs = 60 * MINUTE_MS, skip } = {}) {
+  return createLimiter({
+    limit,
+    windowMs,
+    skip,
+    name: 'export',
+    keyGenerator: (req) => `user:${req.user?._id ?? ipKeyGenerator(req.ip)}`,
+    message: 'Too many exports. Please try again in an hour.',
+  });
+}
+
 /** Viewing passwords on the Users screen: 60 per hour per signed-in user. */
 export function createPasswordViewLimiter({ limit = 60, windowMs = 60 * MINUTE_MS, skip } = {}) {
   return createLimiter({

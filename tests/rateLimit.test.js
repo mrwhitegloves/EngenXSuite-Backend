@@ -3,6 +3,7 @@ import express from 'express';
 import request from 'supertest';
 import {
   createApiLimiter,
+  createExportLimiter,
   createLoginLimiter,
   createLoginPerEmailLimiter,
 } from '../middleware/rateLimit.js';
@@ -113,5 +114,30 @@ describe('sign-in limits', () => {
     expect(Number(blocked.headers['retry-after'])).toBeGreaterThan(0);
     // Other accounts can still sign in.
     expect((await attempt(app, 'agent@engenx.in', '198.51.100.99')).status).toBe(401);
+  });
+});
+
+describe('export limit', () => {
+  it('counts exports per signed-in user, wherever they come from', async () => {
+    const app = express();
+    app.set('trust proxy', 1);
+    app.use((req, res, next) => {
+      req.user = { _id: req.get('x-test-user') };
+      next();
+    });
+    app.get('/export', createExportLimiter({ limit: 2, skip: () => false }), (req, res) =>
+      res.json({ data: 'ok' }),
+    );
+    app.use(errorHandler);
+    const exportAs = (user, address) =>
+      request(app).get('/export').set('X-Forwarded-For', address).set('x-test-user', user);
+
+    const statuses = [];
+    for (let count = 0; count < 3; count += 1) {
+      statuses.push((await exportAs('u1', `198.51.100.${count + 1}`)).status);
+    }
+    expect(statuses).toEqual([200, 200, 429]);
+    // A colleague at the same address still exports.
+    expect((await exportAs('u2', '198.51.100.1')).status).toBe(200);
   });
 });

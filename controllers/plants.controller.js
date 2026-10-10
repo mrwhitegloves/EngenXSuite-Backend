@@ -2,12 +2,16 @@ import { deleteContact, updateContact } from '../services/contacts.service.js';
 import {
   createMachine,
   createPlant,
+  createUnit,
   deleteMachine,
   deletePlant,
+  deleteUnit,
   listMachines,
   listPlants,
+  listUnits,
   updateMachine,
   updatePlant,
+  updateUnit,
 } from '../services/plants.service.js';
 import { sendCreated, sendOk } from '../lib/respond.js';
 
@@ -60,6 +64,29 @@ export async function getPlantMachines(req, res) {
 export async function postPlantMachine(req, res) {
   const { params, body } = req.validated;
   sendCreated(res, await createMachine(req.user, params.id, body, context(req)));
+}
+
+// GET /api/plants/:id/units
+export async function getPlantUnits(req, res) {
+  sendOk(res, await listUnits(req.user, req.validated.params.id));
+}
+
+// POST /api/plants/:id/units
+export async function postPlantUnit(req, res) {
+  const { params, body } = req.validated;
+  sendCreated(res, await createUnit(req.user, params.id, body, context(req)));
+}
+
+// PATCH /api/plant-units/:id
+export async function patchUnit(req, res) {
+  const { params, body } = req.validated;
+  sendOk(res, await updateUnit(req.user, params.id, body, context(req)));
+}
+
+// DELETE /api/plant-units/:id
+export async function removeUnit(req, res) {
+  await deleteUnit(req.user, req.validated.params.id, context(req));
+  sendOk(res, { deleted: true });
 }
 
 // PATCH /api/machines/:id

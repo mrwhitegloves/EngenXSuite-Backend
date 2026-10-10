@@ -3,6 +3,7 @@ import { ACCOUNT_POTENTIALS, COMPANY_SIZES, RELATIONSHIP_HEALTH } from '../model
 import { normalizePhone } from '../lib/phone.js';
 import { dateRange, email, objectId, pagination, sortBy } from './common.js';
 import { createContactBody } from './contacts.js';
+import { tagIds } from './tags.js';
 
 // Short free text. An empty text clears the field (null).
 const text = (max = 200) =>
@@ -125,6 +126,8 @@ const fields = {
   industrial,
   commercial,
   sourceDetail,
+  // Tags chosen from Settings → Tags.
+  tagIds,
   // Changing these two needs the "assign" permission; the service checks it.
   ownerId: objectId,
   assignedUserIds: z
@@ -158,8 +161,8 @@ export const quickAddBody = z.object({
 // The columns the Accounts list can be sorted by.
 export const ACCOUNT_SORTS = ['name', 'accountCode', 'createdAt', 'lastActivityAt'];
 
-export const listAccountsQuery = z.object({
-  ...pagination,
+// The filters of the list, also used by the export (which has no pages).
+const accountFilters = {
   ...dateRange,
   sort: sortBy(ACCOUNT_SORTS),
   search: z.string().trim().max(100).optional(),
@@ -167,4 +170,9 @@ export const listAccountsQuery = z.object({
   industry: z.string().trim().max(100).optional(),
   region: z.string().trim().max(100).optional(),
   ownerId: objectId.optional(),
-});
+  // Accounts that carry this tag.
+  tagId: objectId.optional(),
+};
+
+export const listAccountsQuery = z.object({ ...pagination, ...accountFilters });
+export const exportAccountsQuery = z.object(accountFilters);

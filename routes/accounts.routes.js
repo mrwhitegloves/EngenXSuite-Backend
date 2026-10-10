@@ -3,6 +3,7 @@ import {
   getAccountById,
   getAccountContacts,
   getAccounts,
+  getAccountsExport,
   getFormOptions,
   patchAccount,
   postAccount,
@@ -12,9 +13,11 @@ import {
 } from '../controllers/accounts.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
+import { createExportLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import {
   createAccountBody,
+  exportAccountsQuery,
   listAccountsQuery,
   quickAddBody,
   updateAccountBody,
@@ -32,6 +35,14 @@ router.use(requireAuth);
 
 router.get('/', authorize('accounts', 'view'), validate({ query: listAccountsQuery }), getAccounts);
 router.get('/form-options', authorize('accounts', 'view'), getFormOptions);
+// Taking data out is its own permission, and is limited per person per hour.
+router.get(
+  '/export',
+  authorize('accounts', 'export'),
+  createExportLimiter(),
+  validate({ query: exportAccountsQuery }),
+  getAccountsExport,
+);
 router.post(
   '/',
   authorize('accounts', 'create'),

@@ -1,6 +1,7 @@
 import {
   createAccount,
   deleteAccount,
+  exportAccounts,
   getAccount,
   getAccountFormOptions,
   listAccounts,
@@ -14,6 +15,17 @@ import { sendCreated, sendList, sendOk } from '../lib/respond.js';
 export async function getAccounts(req, res) {
   const { items, pagination } = await listAccounts(req.user, req.validated.query);
   sendList(res, items, pagination);
+}
+
+// GET /api/accounts/export: the accounts of the current filters as a CSV file.
+export async function getAccountsExport(req, res) {
+  const { csv } = await exportAccounts(req.user, req.validated.query, { requestId: req.id });
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  res
+    .status(200)
+    .set('Content-Type', 'text/csv; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="accounts-${day}.csv"`)
+    .send(csv);
 }
 
 // GET /api/accounts/form-options: the lists the forms and filters offer.

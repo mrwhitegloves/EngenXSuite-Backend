@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { normalizePhone } from '../lib/phone.js';
 import { STAKEHOLDER_ROLES } from '../models/contact.model.js';
 import { email } from './common.js';
+import { tagIds } from './tags.js';
 
 // Short free text. An empty text means "not given" (null).
 const text = (max = 120) =>
@@ -38,6 +39,8 @@ export const contactFields = {
   technicalInfluence: oneToFive,
   commercialInfluence: oneToFive,
   relationshipStrength: oneToFive,
+  // Tags chosen from Settings → Tags.
+  tagIds,
 };
 
 // What the person allowed. Changed only on purpose, so it is its own small object.

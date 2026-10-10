@@ -1,20 +1,30 @@
 import { Router } from 'express';
 import {
   getPlantMachines,
+  getPlantUnits,
   patchContact,
   patchMachine,
   patchPlant,
+  patchUnit,
   postPlantMachine,
+  postPlantUnit,
   removeContact,
   removeMachine,
   removePlant,
+  removeUnit,
 } from '../controllers/plants.controller.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import { updateContactBody } from '../validation/contacts.js';
-import { createMachineBody, updateMachineBody, updatePlantBody } from '../validation/plants.js';
+import {
+  createMachineBody,
+  createUnitBody,
+  updateMachineBody,
+  updatePlantBody,
+  updateUnitBody,
+} from '../validation/plants.js';
 
 // Changing and deleting the records that hang under an account, by their own id.
 // (Listing and adding them is under the account: routes/accounts.routes.js.)
@@ -66,6 +76,34 @@ plantsRouter.post(
   authorize('plants', 'create'),
   validate({ params: idParams, body: createMachineBody }),
   postPlantMachine,
+);
+
+plantsRouter.get(
+  '/:id/units',
+  authorize('plants', 'view'),
+  validate({ params: idParams }),
+  getPlantUnits,
+);
+plantsRouter.post(
+  '/:id/units',
+  authorize('plants', 'create'),
+  validate({ params: idParams, body: createUnitBody }),
+  postPlantUnit,
+);
+
+// Departments and production lines, by their own id.
+export const plantUnitsRouter = childRoutes();
+plantUnitsRouter.patch(
+  '/:id',
+  authorize('plants', 'edit'),
+  validate({ params: idParams, body: updateUnitBody }),
+  patchUnit,
+);
+plantUnitsRouter.delete(
+  '/:id',
+  authorize('plants', 'delete'),
+  validate({ params: idParams }),
+  removeUnit,
 );
 
 export const machinesRouter = childRoutes();

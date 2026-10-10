@@ -8,6 +8,7 @@ import { can } from '../lib/can.js';
 import { planChanges, toUpdate } from '../lib/changes.js';
 import { conflict, forbidden, notFound } from '../lib/errors.js';
 import { loadAccountForAction } from './accounts.service.js';
+import { assertUsableTags, loadTagsById } from './tags.service.js';
 
 // Contacts: the people at a customer company. A contact is reached through its account:
 // whoever may not see the account cannot see its people either (404 from the account check).
@@ -24,7 +25,7 @@ async function userNames(ids) {
   return new Map(users.map((user) => [String(user._id), user.name]));
 }
 
-function toView(contact, names) {
+function toView(contact, names, tags = new Map()) {
   const person = (id) => (id ? { id: String(id), name: names.get(String(id)) ?? null } : null);
   return {
     id: String(contact._id),
@@ -37,6 +38,7 @@ function toView(contact, names) {
     email: contact.email ?? null,
     linkedinUrl: contact.linkedinUrl ?? null,
     stakeholderRole: contact.stakeholderRole ?? null,
+    tags: (contact.tagIds ?? []).map((id) => tags.get(String(id))).filter(Boolean),
     decisionPower: contact.decisionPower ?? null,
     technicalInfluence: contact.technicalInfluence ?? null,
     commercialInfluence: contact.commercialInfluence ?? null,
@@ -109,6 +111,7 @@ export async function createContacts(actor, accountId, people, context = {}) {
     throw forbidden('You do not have permission to add contacts.');
   }
   await assertNotAlreadyThere(account._id, people);
+  for (const person of people) await assertUsableTags(person.tagIds, 'contact');
 
   const contacts = await Contact.insertMany(
     people.map((person) => ({
@@ -132,7 +135,8 @@ export async function createContacts(actor, accountId, people, context = {}) {
   }
   emitToAll(SOCKET_EVENTS.contactsChanged);
   const names = await userNames([actor._id]);
-  return contacts.map((contact) => toView(contact.toObject(), names));
+  const tags = await loadTagsById(contacts.flatMap((contact) => contact.tagIds ?? []));
+  return contacts.map((contact) => toView(contact.toObject(), names, tags));
 }
 
 /** The people of one account, by name. */
@@ -142,7 +146,8 @@ export async function listAccountContacts(actor, accountId) {
     .sort({ name: 1, _id: 1 })
     .lean();
   const names = await userNames(contacts.map((contact) => contact.formFilledBy));
-  return contacts.map((contact) => toView(contact, names));
+  const tags = await loadTagsById(contacts.flatMap((contact) => contact.tagIds ?? []));
+  return contacts.map((contact) => toView(contact, names, tags));
 }
 
 /**
@@ -174,6 +179,7 @@ export async function updateContact(actor, contactId, changes, context = {}) {
   const { consent: consentChanges = {}, ...fieldChanges } = changes;
 
   const plan = planChanges(contact, fieldChanges);
+  if (plan.fields.includes('tagIds')) await assertUsableTags(fieldChanges.tagIds, 'contact');
   // The same person entered twice: checked with the values the contact would have afterwards.
   if (plan.fields.some((field) => ['phone_number', 'alt_phone_number', 'email'].includes(field))) {
     await assertNotAlreadyThere(contact.accountId, [{ ...contact, ...fieldChanges }], contact._id);
@@ -214,7 +220,11 @@ export async function updateContact(actor, contactId, changes, context = {}) {
     emitToAll(SOCKET_EVENTS.contactsChanged);
   }
   const saved = await Contact.findById(contact._id).lean();
-  return toView(saved, await userNames([saved.formFilledBy]));
+  return toView(
+    saved,
+    await userNames([saved.formFilledBy]),
+    await loadTagsById(saved.tagIds ?? []),
+  );
 }
 
 /**

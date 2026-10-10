@@ -13,11 +13,13 @@ import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
 import { writeAudit } from '../lib/audit.js';
 import { can } from '../lib/can.js';
+import { toCsv } from '../lib/csv.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { toNameKey } from '../lib/nameKey.js';
 import { buildFilter, buildSort, runListQuery } from '../lib/queryBuilder.js';
 import { scopeFilter } from '../lib/scopeFilter.js';
 import { CODE_SERIES, nextCode } from '../lib/sequence.js';
+import { assertUsableTags, loadTagsById } from './tags.service.js';
 
 // Accounts (customer companies). Every function takes the acting user first and enforces what
 // that user may see and do:
@@ -90,8 +92,13 @@ async function loadLookups(accounts) {
       : [],
   ]);
   const byId = (rows) => new Map(rows.map((row) => [String(row._id), row]));
-  return { users: byId(users), statuses: byId(statuses), parents: byId(parents) };
+  const tags = await loadTagsById(accounts.flatMap((account) => account.tagIds ?? []));
+  return { users: byId(users), statuses: byId(statuses), parents: byId(parents), tags };
 }
+
+/** The tags of a record as { id, name, color }; a tag that no longer exists is left out. */
+const tagsOf = (tagIds, lookups) =>
+  (tagIds ?? []).map((id) => lookups.tags.get(String(id))).filter(Boolean);
 
 const person = (id, lookups) =>
   id ? { id: String(id), name: lookups.users.get(String(id))?.name ?? null } : null;
@@ -117,6 +124,7 @@ function toListView(account, lookups) {
     region: account.region ?? null,
     city: account.hq?.city ?? null,
     status: statusOf(account.statusId, lookups),
+    tags: tagsOf(account.tagIds, lookups),
     owner: person(account.ownerId, lookups),
     lastActivityAt: account.lastActivityAt ?? null,
     createdAt: account.createdAt,
@@ -159,7 +167,7 @@ function toDetailView(account, actor, lookups) {
     formFilledBy: person(account.formFilledBy, lookups),
     owner: person(account.ownerId, lookups),
     assignedUsers: (account.assignedUserIds ?? []).map((id) => person(id, lookups)),
-    tagIds: (account.tagIds ?? []).map(String),
+    tags: tagsOf(account.tagIds, lookups),
     lastActivityAt: account.lastActivityAt ?? null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -262,24 +270,106 @@ async function assertNoDuplicate(actor, nameKey, { exceptId, confirmed }) {
 }
 
 /**
+ * The database filter for the Accounts list and for its export: the same filters give the same
+ * accounts in both. `action` is the permission whose scope limits the result.
+ */
+function accountsFilter(actor, query, action) {
+  const { search, statusId, industry, region, ownerId, tagId, range, from, to } = query;
+  return buildFilter({
+    scope: scopeFilter(actor, FEATURE, { action }),
+    // tagIds is a list on the account; matching one value finds accounts that carry that tag.
+    equals: { statusId, industry, region, ownerId, tagIds: tagId },
+    search: { text: search, fields: ['name', 'accountCode', 'hq.city'] },
+    dates: { field: 'createdAt', query: { range, from, to } },
+    extra: [NOT_DELETED],
+  });
+}
+
+// The most rows one export file holds. A larger result must be narrowed with filters.
+export const EXPORT_ROW_LIMIT = 10000;
+
+const EXPORT_COLUMNS = [
+  { header: 'Code', value: (row) => row.accountCode },
+  { header: 'Company', value: (row) => row.name },
+  { header: 'Status', value: (row) => row.status?.name },
+  { header: 'Industry', value: (row) => row.industry },
+  { header: 'Company type', value: (row) => row.companyType },
+  { header: 'Company size', value: (row) => row.companySize },
+  { header: 'Phone', value: (row) => row.phone_number },
+  { header: 'Email', value: (row) => row.email },
+  { header: 'Website', value: (row) => row.website },
+  { header: 'City', value: (row) => row.hq?.city },
+  { header: 'State', value: (row) => row.hq?.state },
+  { header: 'Country', value: (row) => row.hq?.country },
+  { header: 'Region', value: (row) => row.region },
+  { header: 'Owner', value: (row) => row.owner?.name },
+  { header: 'Tags', value: (row) => row.tags.map((tag) => tag.name).join('; ') },
+  { header: 'Source', value: (row) => row.source },
+  // India date, as a plain YYYY-MM-DD that sorts and filters in a spreadsheet.
+  {
+    header: 'Created',
+    value: (row) =>
+      new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(row.createdAt),
+  },
+];
+
+/**
+ * The accounts of the current filters as a CSV file. Only accounts inside the actor's EXPORT
+ * scope, never GSTIN or PAN. Every export is written to the audit log.
+ * @param {object} actor
+ * @param {object} query  Already validated (validation/accounts.js exportAccountsQuery)
+ * @returns {Promise<{ csv: string, count: number }>}
+ */
+export async function exportAccounts(actor, query, context = {}) {
+  const filter = accountsFilter(actor, query, 'export');
+  const total = await Account.countDocuments(filter);
+  if (total > EXPORT_ROW_LIMIT) {
+    throw conflict(
+      `These filters match ${total} accounts. An export holds at most ${EXPORT_ROW_LIMIT}; add a filter to narrow it.`,
+    );
+  }
+  const accounts = await Account.find(filter)
+    .sort(buildSort(query.sort, SORT_FIELDS, '-createdAt'))
+    .lean();
+  const lookups = await loadLookups(accounts);
+  const rows = accounts.map((account) => ({
+    ...account,
+    status: statusOf(account.statusId, lookups),
+    owner: person(account.ownerId, lookups),
+    tags: tagsOf(account.tagIds, lookups),
+  }));
+
+  // The audit log needs one record id; an export is about the person who took the data out.
+  await writeAudit({
+    actor,
+    action: 'account.exported',
+    entityType: 'users',
+    entityId: actor._id,
+    newValue: {
+      accounts: rows.length,
+      filters: Object.fromEntries(
+        Object.entries(query).filter(([, value]) => value !== undefined && value !== ''),
+      ),
+    },
+    requestId: context.requestId,
+  });
+  return { csv: toCsv(EXPORT_COLUMNS, rows), count: rows.length };
+}
+
+/**
  * @param {object} actor
  * @param {object} query  Already validated (validation/accounts.js listAccountsQuery)
  */
 export async function listAccounts(actor, query) {
-  const { page, pageSize, sort, search, statusId, industry, region, ownerId, ...dates } = query;
-  const filter = buildFilter({
-    scope: scopeFilter(actor, FEATURE),
-    equals: { statusId, industry, region, ownerId },
-    search: { text: search, fields: ['name', 'accountCode', 'hq.city'] },
-    dates: { field: 'createdAt', query: dates },
-    extra: [NOT_DELETED],
-  });
+  const { page, pageSize, sort } = query;
+  const filter = accountsFilter(actor, query, 'view');
   const { rows, pagination } = await runListQuery(Account, {
     filter,
     sort: buildSort(sort, SORT_FIELDS, '-createdAt'),
     page,
     pageSize,
-    select: 'accountCode name industry region hq.city statusId ownerId lastActivityAt createdAt',
+    select:
+      'accountCode name industry region hq.city statusId tagIds ownerId lastActivityAt createdAt',
   });
   const lookups = await loadLookups(rows);
   return { items: rows.map((row) => toListView(row, lookups)), pagination };
@@ -339,6 +429,7 @@ export async function createAccount(actor, data, context = {}) {
   await assertActiveUsers(assignedUserIds, 'assignedUserIds');
   if (statusId) await assertUsableStatus(statusId);
   if (rest.parentAccountId) await assertUsableParent(rest.parentAccountId, null);
+  await assertUsableTags(rest.tagIds, 'account');
 
   const nameKey = toNameKey(rest.name);
   await assertNoDuplicate(actor, nameKey, { confirmed: confirmDuplicate });
@@ -398,7 +489,7 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
   }
   // Keep only what really differs from what is saved (ids are compared as text).
   const comparable = (field, value) => {
-    if (field === 'assignedUserIds') return (value ?? []).map(String);
+    if (['assignedUserIds', 'tagIds'].includes(field)) return (value ?? []).map(String);
     return ID_FIELDS.includes(field) ? idText(value) : value;
   };
   const changed = Object.keys(next).filter(
@@ -422,6 +513,7 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
     }
     await assertUsableStatus(next.statusId);
   }
+  if (changed.includes('tagIds')) await assertUsableTags(next.tagIds, 'account');
   if (changed.includes('parentAccountId') && next.parentAccountId) {
     await assertUsableParent(next.parentAccountId, account._id);
   }
@@ -460,6 +552,9 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
         ),
       )
     : new Map();
+  const tagNames = changed.includes('tagIds')
+    ? await loadTagsById([...(account.tagIds ?? []), ...(next.tagIds ?? [])])
+    : new Map();
   const parentNames = changed.includes('parentAccountId')
     ? new Map(
         (
@@ -473,6 +568,10 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
     : new Map();
   const auditPair = (field, value) => {
     if (field === 'statusId') return ['status', statusNames.get(idText(value)) ?? null];
+    if (field === 'tagIds') {
+      // Tags are written by name, so the log reads without lookups.
+      return ['tags', (value ?? []).map((id) => tagNames.get(String(id))?.name ?? 'Deleted tag')];
+    }
     if (field === 'parentAccountId') return ['parent', parentNames.get(idText(value)) ?? null];
     if (SENSITIVE_FIELDS.includes(field)) return [field, maskSensitive(value)];
     return [field, value ?? null];

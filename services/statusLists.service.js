@@ -1,4 +1,5 @@
 import { Account } from '../models/account.model.js';
+import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { AccountStatus, LeadStatus } from '../models/statusLists.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
@@ -28,6 +29,15 @@ export const STATUS_LISTS = {
     // Leads arrive in the next phase; until then no record can use a lead status.
     countUses: async () => 0,
   },
+  // What the company sells. A plain list: it has no default entry and no fixed key.
+  'solution-categories': {
+    model: SolutionCategory,
+    label: 'solution category',
+    entityType: 'solution_categories',
+    isPlain: true,
+    // Leads carry solution categories; they arrive in the next phase.
+    countUses: async () => 0,
+  },
 };
 export const STATUS_LIST_KEYS = Object.keys(STATUS_LISTS);
 
@@ -35,11 +45,11 @@ function toView(status) {
   return {
     id: String(status._id),
     name: status.name,
-    key: status.key,
+    key: status.key ?? null,
     color: status.color ?? null,
-    order: status.order,
+    order: status.order ?? 0,
     isActive: status.isActive,
-    isDefault: status.isDefault,
+    isDefault: status.isDefault ?? false,
   };
 }
 
@@ -74,23 +84,30 @@ export async function listStatuses(listKey) {
  * @param {{ name: string, color?: string | null }} data  Already validated
  */
 export async function createStatus(actor, listKey, data, context = {}) {
-  const { model, entityType } = STATUS_LISTS[listKey];
+  const { model, entityType, isPlain } = STATUS_LISTS[listKey];
   await assertNameIsFree(model, data.name);
 
   // The key must be unique for ever, also against keys of renamed statuses.
   const baseKey = toKey(data.name) || 'status';
   let key = baseKey;
-  for (let number = 2; await model.exists({ key }); number += 1) key = `${baseKey}_${number}`;
+  for (let number = 2; !isPlain && (await model.exists({ key })); number += 1) {
+    key = `${baseKey}_${number}`;
+  }
 
   const last = await model.findOne().sort({ order: -1 }).select('order').lean();
   const isFirst = !(await model.exists({}));
   const status = await model.create({
     name: data.name,
-    key,
-    color: data.color ?? undefined,
     order: (last?.order ?? 0) + 10,
-    // The very first status of a list becomes its default.
-    isDefault: isFirst,
+    // A plain list has neither a key nor a default, and no colour.
+    ...(isPlain
+      ? {}
+      : {
+          key,
+          color: data.color ?? undefined,
+          // The very first status of a list becomes its default.
+          isDefault: isFirst,
+        }),
   });
   await writeAudit({
     actor,
@@ -109,9 +126,12 @@ export async function createStatus(actor, listKey, data, context = {}) {
  * @param {{ name?: string, color?: string | null, isActive?: boolean, isDefault?: true }} changes
  */
 export async function updateStatus(actor, listKey, statusId, changes, context = {}) {
-  const { model, entityType } = STATUS_LISTS[listKey];
+  const { model, entityType, isPlain } = STATUS_LISTS[listKey];
   const status = await model.findById(statusId).lean();
   if (!status) throw notFound('Status not found');
+  if (isPlain && (changes.isDefault !== undefined || changes.color !== undefined)) {
+    throw badRequest('This list has no default entry and no colours.');
+  }
 
   const { oldValue, newValue, changed } = diffFields(status, changes);
   if (!changed) return toView(status);

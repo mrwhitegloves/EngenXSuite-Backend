@@ -1,6 +1,7 @@
 import { Contact } from '../models/contact.model.js';
 import { Machine } from '../models/machine.model.js';
 import { PLANT_HEAD_FIELDS, Plant } from '../models/plant.model.js';
+import { PlantUnit } from '../models/plantUnit.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
 import { writeAudit } from '../lib/audit.js';
@@ -218,6 +219,8 @@ function toMachineView(machine) {
     id: String(machine._id),
     plantId: String(machine.plantId),
     name: machine.name,
+    // The department or line it stands in (null: directly in the plant).
+    unitId: machine.unitId ? String(machine.unitId) : null,
     quantity: machine.quantity,
     machineType: machine.machineType ?? null,
     manufacturer: machine.manufacturer ?? null,
@@ -261,6 +264,7 @@ export async function listMachines(actor, plantId) {
 export async function createMachine(actor, plantId, data, context = {}) {
   const plant = await loadPlant(actor, plantId);
   assertAllowed(actor, 'create');
+  await assertUnitOfPlant(plant._id, data.unitId);
   const machine = await Machine.create({
     ...given(data),
     plantId: plant._id,
@@ -285,6 +289,7 @@ export async function updateMachine(actor, machineId, changes, context = {}) {
   if (changes.quantity === null) throw badRequest('A machine row has a quantity of at least 1');
 
   const plan = planChanges(machine, changes);
+  if (plan.fields.includes('unitId')) await assertUnitOfPlant(machine.plantId, changes.unitId);
   const update = toUpdate(plan);
   if (update) {
     await Machine.updateOne({ _id: machine._id }, update, { runValidators: true });
@@ -315,6 +320,137 @@ export async function deleteMachine(actor, machineId, context = {}) {
     entityType: 'machines',
     entityId: machine._id,
     oldValue: { name: machine.name, plantId: String(machine.plantId) },
+    requestId: context.requestId,
+  });
+  emitToAll(SOCKET_EVENTS.plantsChanged);
+}
+
+// ── Departments and production lines ────────────────────────────────────────────────────────
+// Plant → Department → Production line → Machine. A line may sit under a department or
+// directly under the plant. They only group things, so they are removed for good when deleted
+// (the machines and lines that pointed at them simply stop pointing).
+
+function toUnitView(unit) {
+  return {
+    id: String(unit._id),
+    plantId: String(unit.plantId),
+    type: unit.type,
+    name: unit.name,
+    parentId: unit.parentId ? String(unit.parentId) : null,
+  };
+}
+
+async function loadUnit(actor, unitId) {
+  const unit = await PlantUnit.findById(unitId).lean();
+  if (!unit) throw notFound('Not found');
+  await loadPlant(actor, unit.plantId).catch(() => {
+    throw notFound('Not found');
+  });
+  return unit;
+}
+
+/** Two departments (or two lines) of one plant cannot have the same name. */
+async function assertUnitNameIsFree(plantId, type, name, exceptUnitId) {
+  const filter = { plantId, type, name: new RegExp(`^${containsPattern(name).source}$`, 'i') };
+  if (exceptUnitId) filter._id = { $ne: exceptUnitId };
+  if (await PlantUnit.exists(filter)) {
+    throw conflict(`This plant already has a ${type} with this name.`, [{ field: 'name' }]);
+  }
+}
+
+/** A line's parent must be a department of the same plant; a department has no parent. */
+async function assertUsableParentUnit(plantId, type, parentId) {
+  if (!parentId) return;
+  const fail = (message) => badRequest(message, [{ field: 'parentId', message }]);
+  if (type === 'department') throw fail('A department sits directly under the plant.');
+  const parent = await PlantUnit.findOne({ _id: parentId, plantId, type: 'department' }).lean();
+  if (!parent) throw fail('Choose a department of this plant.');
+}
+
+/** A machine's place must be a department or line of its own plant. */
+async function assertUnitOfPlant(plantId, unitId) {
+  if (!unitId) return;
+  if (!(await PlantUnit.exists({ _id: unitId, plantId }))) {
+    throw badRequest('Choose a department or line of this plant', [{ field: 'unitId' }]);
+  }
+}
+
+/** The departments and lines of one plant: departments first, then lines, each by name. */
+export async function listUnits(actor, plantId) {
+  const plant = await loadPlant(actor, plantId);
+  const units = await PlantUnit.find({ plantId: plant._id }).sort({ type: 1, name: 1 }).lean();
+  return units.map(toUnitView);
+}
+
+/** @param {{ type: 'department' | 'line', name: string, parentId?: string | null }} data */
+export async function createUnit(actor, plantId, data, context = {}) {
+  const plant = await loadPlant(actor, plantId);
+  assertAllowed(actor, 'create');
+  await assertUnitNameIsFree(plant._id, data.type, data.name);
+  await assertUsableParentUnit(plant._id, data.type, data.parentId);
+
+  const unit = await PlantUnit.create({
+    plantId: plant._id,
+    type: data.type,
+    name: data.name,
+    ...(data.parentId ? { parentId: data.parentId } : {}),
+    createdBy: actor._id,
+  });
+  await writeAudit({
+    actor,
+    action: 'plant_unit.created',
+    entityType: 'plant_units',
+    entityId: unit._id,
+    newValue: { type: unit.type, name: unit.name, plantId: String(plant._id) },
+    requestId: context.requestId,
+  });
+  emitToAll(SOCKET_EVENTS.plantsChanged);
+  return toUnitView(unit.toObject());
+}
+
+/** Rename, or move a line under another department (null: directly under the plant). */
+export async function updateUnit(actor, unitId, changes, context = {}) {
+  const unit = await loadUnit(actor, unitId);
+  assertAllowed(actor, 'edit');
+
+  const plan = planChanges(unit, changes);
+  if (plan.fields.includes('name')) {
+    await assertUnitNameIsFree(unit.plantId, unit.type, plan.newValue.name, unit._id);
+  }
+  if (plan.fields.includes('parentId')) {
+    await assertUsableParentUnit(unit.plantId, unit.type, plan.newValue.parentId);
+  }
+  const update = toUpdate(plan);
+  if (update) {
+    await PlantUnit.updateOne({ _id: unit._id }, update, { runValidators: true });
+    await writeAudit({
+      actor,
+      action: 'plant_unit.updated',
+      entityType: 'plant_units',
+      entityId: unit._id,
+      oldValue: plan.oldValue,
+      newValue: plan.newValue,
+      requestId: context.requestId,
+    });
+    emitToAll(SOCKET_EVENTS.plantsChanged);
+  }
+  return toUnitView(await PlantUnit.findById(unit._id).lean());
+}
+
+/** Remove a department or line. Its machines and lines stay; they just stop pointing at it. */
+export async function deleteUnit(actor, unitId, context = {}) {
+  const unit = await loadUnit(actor, unitId);
+  assertAllowed(actor, 'delete');
+
+  await Machine.updateMany({ unitId: unit._id }, { $unset: { unitId: '' } });
+  await PlantUnit.updateMany({ parentId: unit._id }, { $unset: { parentId: '' } });
+  await PlantUnit.deleteOne({ _id: unit._id });
+  await writeAudit({
+    actor,
+    action: 'plant_unit.deleted',
+    entityType: 'plant_units',
+    entityId: unit._id,
+    oldValue: { type: unit.type, name: unit.name, plantId: String(unit.plantId) },
     requestId: context.requestId,
   });
   emitToAll(SOCKET_EVENTS.plantsChanged);
