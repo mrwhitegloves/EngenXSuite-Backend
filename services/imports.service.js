@@ -288,7 +288,7 @@ export async function saveTemplate(actor, { name, targetType, mapping }) {
   const template = await ImportMappingTemplate.findOneAndUpdate(
     { targetType, nameKey: name.trim().toLowerCase() },
     { $set: { name: name.trim(), mapping }, $setOnInsert: { createdBy: actor._id } },
-    { upsert: true, new: true },
+    { upsert: true, returnDocument: 'after' },
   ).lean();
   return toTemplateView(template);
 }
@@ -339,7 +339,7 @@ export async function startImport(actor, importId, data, context = {}) {
   const started = await Import.findOneAndUpdate(
     { _id: item._id, status: { $in: OPEN_STATUSES } },
     { $set: { mapping: data.mapping, duplicateMode: data.duplicateMode, status: 'queued' } },
-    { new: true },
+    { returnDocument: 'after' },
   ).lean();
   if (!started) throw conflict('This import has already been started.');
 
@@ -368,7 +368,7 @@ function claim(importId, status) {
       ],
     },
     { $set: { heartbeatAt: new Date(), ...(status === 'queued' ? { status: 'running' } : {}) } },
-    { new: true },
+    { returnDocument: 'after' },
   ).lean();
 }
 
@@ -558,7 +558,7 @@ export async function undoImport(actor, importId, context = {}) {
   const started = await Import.findOneAndUpdate(
     { _id: item._id, status: { $in: ['completed', 'failed'] } },
     { $set: { status: 'undoing', undoneBy: actor._id, heartbeatAt: null } },
-    { new: true },
+    { returnDocument: 'after' },
   ).lean();
   if (!started) throw conflict('Only a finished import can be undone, and only once.');
 

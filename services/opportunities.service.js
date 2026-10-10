@@ -28,6 +28,7 @@ import { LeadStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction, registerAccountDeleteBlocker } from './accounts.service.js';
 import { recordSystemActivity } from './activities.service.js';
+import { notify } from './notifications.service.js';
 import { moveToStage, startingStage, writeFirstStage } from './stage.service.js';
 import { assertUsableTags, loadTagsById } from './tags.service.js';
 
@@ -61,6 +62,20 @@ const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 const uniqueIds = (ids) => [...new Set(ids.filter(Boolean).map(String))];
 const fieldProblem = (field, message) => badRequest(message, [{ field, message }]);
 const announce = () => emitToAll(SOCKET_EVENTS.opportunitiesChanged);
+
+/** Tell each of these people that the lead is theirs now (never the person who did it). */
+async function notifyAssigned(lead, userIds, actor) {
+  for (const userId of uniqueIds(userIds)) {
+    await notify({
+      userId,
+      actorId: actor._id,
+      type: 'lead_assigned',
+      title: `${actor.name} gave you a lead`,
+      body: lead.name,
+      link: `/pipeline/${lead._id}`,
+    });
+  }
+}
 
 /**
  * Load one lead for an action. Outside the user's scope: "not found" (404).
@@ -531,6 +546,7 @@ export async function createLead(actor, data, context = {}) {
     refCollection: 'opportunities',
     refId: lead._id,
   });
+  await notifyAssigned(lead, [lead.ownerId, ...lead.assignedUserIds], actor);
   announce();
   return detailOf(lead.toObject(), actor);
 }
@@ -629,6 +645,17 @@ export async function updateLead(actor, leadId, changes, context = {}) {
       subtype: 'lead_assigned',
       title: 'Owner or assigned people changed',
     });
+    // Only the people who are new on the lead are told.
+    const before = uniqueIds([lead.ownerId, ...(lead.assignedUserIds ?? [])]);
+    const after = [
+      'ownerId' in requested ? requested.ownerId : lead.ownerId,
+      ...(requested.assignedUserIds ?? lead.assignedUserIds ?? []),
+    ];
+    await notifyAssigned(
+      lead,
+      after.filter((id) => id && !before.includes(String(id))),
+      actor,
+    );
   }
 
   // The stage goes through the one stage service, also when it is changed in the edit form.

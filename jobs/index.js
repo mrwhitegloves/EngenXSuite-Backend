@@ -2,6 +2,7 @@ import { JOB_NAMES } from '../constants/jobNames.js';
 import { runBackup } from './backup.jobs.js';
 import { runImportJob, runImportUndoJob } from './imports.jobs.js';
 import { runPing } from './system.jobs.js';
+import { runTaskRemindersJob } from './tasks.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
 
 // Every background job name and the function that runs it. A worker looks the name up here.
@@ -20,4 +21,5 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.webhookSweep]: runWebhookSweep,
   [JOB_NAMES.importRun]: runImportJob,
   [JOB_NAMES.importUndo]: runImportUndoJob,
+  [JOB_NAMES.taskReminders]: runTaskRemindersJob,
 };

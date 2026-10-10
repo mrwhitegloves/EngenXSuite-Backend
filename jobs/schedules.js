@@ -26,6 +26,15 @@ const SCHEDULES = [
     jobName: JOB_NAMES.webhookSweep,
     isEnabled: () => true,
   },
+  {
+    // Every minute: task reminders and "overdue" notifications.
+    id: 'task-reminders',
+    queue: 'messaging',
+    cron: '* * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.taskReminders,
+    isEnabled: () => true,
+  },
 ];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -8,4 +8,5 @@ export const JOB_NAMES = {
   webhookSweep: 'webhook.sweep',
   importRun: 'import.run',
   importUndo: 'import.undo',
+  taskReminders: 'tasks.reminders',
 };

@@ -48,7 +48,7 @@ export async function updateBranding(actor, changes, context = {}) {
         'branding.companyName': after.companyName,
       },
     },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   ).lean();
 
   await invalidate(BRANDING_CACHE_KEY);

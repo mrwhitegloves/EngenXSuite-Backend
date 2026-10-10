@@ -25,6 +25,10 @@ const taskSchema = new mongoose.Schema(
     // When to remind the assignee; a scheduled job sends the reminder.
     remindAt: { type: Date },
     completedAt: { type: Date },
+    // Set by the reminder job once the assignee was told (services/taskReminders.service.js).
+    // Cleared when the due time or the reminder time changes, so the new time is told again.
+    reminderSentAt: { type: Date },
+    overdueNotifiedAt: { type: Date },
     // What the task is about (all optional).
     accountId: { type: ObjectId, ref: 'Account' },
     contactId: { type: ObjectId, ref: 'Contact' },

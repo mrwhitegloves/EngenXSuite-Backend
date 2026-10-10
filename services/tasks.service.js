@@ -14,6 +14,7 @@ import { TASK_PRIORITIES, TASK_TYPES, Task } from '../models/task.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction } from './accounts.service.js';
 import { recordActivity } from './activities.service.js';
+import { notify } from './notifications.service.js';
 import { loadLeadForAction } from './opportunities.service.js';
 
 // Tasks: the one task system of everyone (Master Prompt Section 33).
@@ -271,6 +272,18 @@ async function assertAssignable(actor, assigneeId) {
   }
 }
 
+/** Tell the assignee that a task is theirs now (not when they gave it to themselves). */
+function notifyAssignee(task, actor) {
+  return notify({
+    userId: task.assigneeId,
+    actorId: actor._id,
+    type: 'task_assigned',
+    title: `${actor.name} gave you a task`,
+    body: task.title,
+    link: task.opportunityId ? `/pipeline/${task.opportunityId}` : '/activities',
+  });
+}
+
 /** The timeline entry of a task event, when the task is about a lead, company or contact. */
 async function onTimeline(task, actor, subtype, title, occurredAt) {
   if (!task.accountId && !task.opportunityId && !task.contactId) return;
@@ -312,6 +325,7 @@ export async function createTask(actor, data, context = {}) {
     requestId: context.requestId,
   });
   await onTimeline(task, actor, 'task_created', `Task: ${task.title}`, task.createdAt);
+  await notifyAssignee(task, actor);
   announce();
   return viewOf(task, actor);
 }
@@ -336,6 +350,10 @@ export async function updateTask(actor, taskId, changes, context = {}) {
   const reopens = plan.fields.includes('status') && task.status === 'done';
   if (becomesDone) plan.set.completedAt = now;
   if (reopens) plan.unset.completedAt = '';
+  // A new due or reminder time is told about again.
+  if (plan.fields.some((field) => ['dueAt', 'remindAt'].includes(field))) {
+    Object.assign(plan.unset, { reminderSentAt: '', overdueNotifiedAt: '' });
+  }
 
   await Task.updateOne({ _id: task._id }, toUpdate(plan), { runValidators: true });
   await writeAudit({
@@ -349,6 +367,9 @@ export async function updateTask(actor, taskId, changes, context = {}) {
   });
   // Written once per task: completing it again after a reopen does not add a second entry.
   if (becomesDone) await onTimeline(task, actor, 'task_completed', `Task done: ${task.title}`, now);
+  if (plan.fields.includes('assigneeId')) {
+    await notifyAssignee({ ...task, assigneeId: changes.assigneeId }, actor);
+  }
   announce();
   return viewOf(await Task.findById(task._id).lean(), actor);
 }

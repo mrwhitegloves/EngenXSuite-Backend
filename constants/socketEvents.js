@@ -20,6 +20,8 @@ export const SOCKET_EVENTS = {
   opportunitiesChanged: 'opportunities.changed',
   // A timeline entry was added, changed or removed (a note, a stage change, a task event …).
   activitiesChanged: 'activities.changed',
+  // Sent to one user: their notifications changed (a new one, or some were read).
+  notificationsChanged: 'notifications.changed',
   // A task was added, changed, completed or deleted.
   tasksChanged: 'tasks.changed',
   // A tag was added, renamed, merged or deleted.

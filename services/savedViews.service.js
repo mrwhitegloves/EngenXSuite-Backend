@@ -35,7 +35,7 @@ export async function saveView(actor, { screen, name, query }) {
   const view = await SavedView.findOneAndUpdate(
     { userId: actor._id, screen, name },
     { $set: { query } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   ).lean();
   return toView(view);
 }
