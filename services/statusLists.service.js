@@ -1,4 +1,6 @@
 import { Account } from '../models/account.model.js';
+import { Opportunity } from '../models/opportunity.model.js';
+import { PipelineStage } from '../models/pipelineStage.model.js';
 import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { AccountStatus, LeadStatus } from '../models/statusLists.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
@@ -7,12 +9,15 @@ import { diffFields, writeAudit } from '../lib/audit.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { containsPattern } from '../lib/queryBuilder.js';
 
-// The status lists managed in Settings → Statuses (founder decision 0012): account statuses and
-// lead statuses. One service for both, because they behave the same way:
+// The lists managed in Settings (founder decision 0012): account statuses, lead statuses,
+// solution categories and pipeline stages. One service for all, because they behave the same way:
 //   - names are unique; a status has a fixed `key` that survives a rename
 //   - exactly one status is the default for new records
 //   - a status in use cannot be deleted (switch it off instead); the default cannot be
 //     switched off or deleted
+// Pipeline stages differ in two points: they have no default (a new lead starts in the first
+// open stage), and each has a type (open, won, lost) and a suggested chance of winning. The
+// pipeline always keeps at least one active stage of each type.
 
 export const STATUS_LISTS = {
   'account-statuses': {
@@ -26,8 +31,8 @@ export const STATUS_LISTS = {
     model: LeadStatus,
     label: 'lead status',
     entityType: 'lead_statuses',
-    // Leads arrive in the next phase; until then no record can use a lead status.
-    countUses: async () => 0,
+    // Deleted leads count too: they keep their status.
+    countUses: (statusId) => Opportunity.countDocuments({ leadStatusId: statusId }),
   },
   // What the company sells. A plain list: it has no default entry and no fixed key.
   'solution-categories': {
@@ -35,8 +40,15 @@ export const STATUS_LISTS = {
     label: 'solution category',
     entityType: 'solution_categories',
     isPlain: true,
-    // Leads carry solution categories; they arrive in the next phase.
-    countUses: async () => 0,
+    countUses: (categoryId) => Opportunity.countDocuments({ solutionCategoryIds: categoryId }),
+  },
+  // The steps a lead moves through. The stage of a lead is changed only by the stage service.
+  'pipeline-stages': {
+    model: PipelineStage,
+    label: 'pipeline stage',
+    entityType: 'pipeline_stages',
+    isStages: true,
+    countUses: (stageId) => Opportunity.countDocuments({ stageId }),
   },
 };
 export const STATUS_LIST_KEYS = Object.keys(STATUS_LISTS);
@@ -50,7 +62,25 @@ function toView(status) {
     order: status.order ?? 0,
     isActive: status.isActive,
     isDefault: status.isDefault ?? false,
+    // Pipeline stages only.
+    ...(status.type
+      ? { type: status.type, defaultProbability: status.defaultProbability ?? null }
+      : {}),
   };
+}
+
+/** The pipeline must keep one active stage of each type: refuse to take away the last one. */
+async function assertNotLastOfType(stage) {
+  const others = await PipelineStage.countDocuments({
+    _id: { $ne: stage._id },
+    type: stage.type,
+    isActive: true,
+  });
+  if (stage.isActive && others === 0) {
+    throw conflict(
+      `This is the only active "${stage.type}" stage. The pipeline needs at least one; add another first.`,
+    );
+  }
 }
 
 /** "Contact Attempt 1" → "contact_attempt_1". */
@@ -81,10 +111,14 @@ export async function listStatuses(listKey) {
 /**
  * @param {object} actor
  * @param {string} listKey  One of STATUS_LIST_KEYS
- * @param {{ name: string, color?: string | null }} data  Already validated
+ * @param {{ name: string, color?: string | null, type?: string, defaultProbability?: number | null }} data
+ *        Already validated. type and defaultProbability are for pipeline stages only.
  */
 export async function createStatus(actor, listKey, data, context = {}) {
-  const { model, entityType, isPlain } = STATUS_LISTS[listKey];
+  const { model, entityType, isPlain, isStages } = STATUS_LISTS[listKey];
+  if (!isStages && (data.type !== undefined || data.defaultProbability !== undefined)) {
+    throw badRequest('Only pipeline stages have a type and a chance of winning.');
+  }
   await assertNameIsFree(model, data.name);
 
   // The key must be unique for ever, also against keys of renamed statuses.
@@ -105,9 +139,13 @@ export async function createStatus(actor, listKey, data, context = {}) {
       : {
           key,
           color: data.color ?? undefined,
-          // The very first status of a list becomes its default.
-          isDefault: isFirst,
         }),
+    ...(isStages
+      ? { type: data.type ?? 'open', defaultProbability: data.defaultProbability ?? undefined }
+      : // The very first status of a list becomes its default.
+        isPlain
+        ? {}
+        : { isDefault: isFirst }),
   });
   await writeAudit({
     actor,
@@ -126,11 +164,19 @@ export async function createStatus(actor, listKey, data, context = {}) {
  * @param {{ name?: string, color?: string | null, isActive?: boolean, isDefault?: true }} changes
  */
 export async function updateStatus(actor, listKey, statusId, changes, context = {}) {
-  const { model, entityType, isPlain } = STATUS_LISTS[listKey];
+  const { model, entityType, isPlain, isStages, countUses } = STATUS_LISTS[listKey];
   const status = await model.findById(statusId).lean();
   if (!status) throw notFound('Status not found');
   if (isPlain && (changes.isDefault !== undefined || changes.color !== undefined)) {
     throw badRequest('This list has no default entry and no colours.');
+  }
+  if (isStages && changes.isDefault !== undefined) {
+    throw badRequest(
+      'The pipeline has no default stage: a new lead starts in the first open stage.',
+    );
+  }
+  if (!isStages && (changes.type !== undefined || changes.defaultProbability !== undefined)) {
+    throw badRequest('Only pipeline stages have a type and a chance of winning.');
   }
 
   const { oldValue, newValue, changed } = diffFields(status, changes);
@@ -145,15 +191,25 @@ export async function updateStatus(actor, listKey, statusId, changes, context = 
     );
   }
 
+  if (isStages && (newValue.isActive === false || newValue.type !== undefined)) {
+    await assertNotLastOfType(status);
+  }
+  if (isStages && newValue.type !== undefined && (await countUses(status._id)) > 0) {
+    // Leads keep a copy of their stage's type (open, won, lost); it must stay true.
+    throw conflict('Leads are in this stage, so its type cannot change. Add a new stage instead.');
+  }
+
   if (newValue.isDefault === true) {
     // Exactly one default: the others give it up in the same step.
     await model.updateMany({ _id: { $ne: status._id } }, { $set: { isDefault: false } });
   }
   const set = { ...newValue };
   const unset = {};
-  if (set.color === null) {
-    delete set.color;
-    unset.color = '';
+  for (const field of ['color', 'defaultProbability']) {
+    if (set[field] === null) {
+      delete set[field];
+      unset[field] = '';
+    }
   }
   await model.updateOne(
     { _id: status._id },
@@ -206,9 +262,10 @@ export async function reorderStatuses(actor, listKey, orderedIds, context = {}) 
 
 /** Delete a status that no record uses and that is not the default. */
 export async function deleteStatus(actor, listKey, statusId, context = {}) {
-  const { model, entityType, countUses, label } = STATUS_LISTS[listKey];
+  const { model, entityType, countUses, label, isStages } = STATUS_LISTS[listKey];
   const status = await model.findById(statusId).lean();
   if (!status) throw notFound('Status not found');
+  if (isStages) await assertNotLastOfType(status);
   if (status.isDefault) {
     throw conflict('The default status cannot be deleted. Make another one the default first.');
   }

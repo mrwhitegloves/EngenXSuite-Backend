@@ -16,6 +16,8 @@ export const SOCKET_EVENTS = {
   contactsChanged: 'contacts.changed',
   // A plant or one of its machines was added, changed or deleted.
   plantsChanged: 'plants.changed',
+  // A lead was added, changed, moved to another stage, reassigned or deleted.
+  opportunitiesChanged: 'opportunities.changed',
   // A tag was added, renamed, merged or deleted.
   tagsChanged: 'tags.changed',
   // Sent to one user: an import of theirs moved on (progress, finished, undone).

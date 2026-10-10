@@ -1,5 +1,6 @@
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
+import { Opportunity } from '../models/opportunity.model.js';
 import { TAG_TARGETS, Tag } from '../models/tag.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
@@ -14,7 +15,7 @@ import { badRequest, conflict, notFound } from '../lib/errors.js';
 //   merge  : records of the tag that goes away get the tag that stays, then the first is deleted
 
 // Every collection that carries tagIds. A new one (leads) is added to this list and nowhere else.
-const TAGGED_MODELS = [Account, Contact];
+const TAGGED_MODELS = [Account, Contact, Opportunity];
 
 const toKey = (name) => name.trim().toLowerCase().replace(/\s+/g, ' ');
 const announce = () => emitToAll(SOCKET_EVENTS.tagsChanged);
