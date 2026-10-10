@@ -374,7 +374,7 @@ describe('new account fields', () => {
     const group = await client.post('/api/accounts').send({ name: 'Kalyani Group' });
     const response = await client.post('/api/accounts').send({
       name: 'Bharat Forge',
-      phone: '020-2670 2777',
+      phone_number: '020-2670 2777',
       email: ' Info@BharatForge.com ',
       linkedinUrl: 'linkedin.com/company/bharat-forge',
       description: 'Forging company in Pune.',
@@ -383,7 +383,7 @@ describe('new account fields', () => {
     });
     expect(response.status).toBe(201);
     expect(response.body.data).toMatchObject({
-      phone: '+912026702777',
+      phone_number: '+912026702777',
       email: 'info@bharatforge.com',
       linkedinUrl: 'https://linkedin.com/company/bharat-forge',
       description: 'Forging company in Pune.',
@@ -393,7 +393,7 @@ describe('new account fields', () => {
 
     const bad = await client.post('/api/accounts').send({
       name: 'Bad Fields',
-      phone: '12345',
+      phone_number: '12345',
       email: 'not-an-email',
       linkedinUrl: 'https://example.com/company/x',
       description: 'x'.repeat(2001),
@@ -405,7 +405,7 @@ describe('new account fields', () => {
       'email',
       'linkedinUrl',
       'parentAccountId',
-      'phone',
+      'phone_number',
     ]);
   });
 

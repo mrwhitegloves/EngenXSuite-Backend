@@ -6,6 +6,8 @@ import {
   listAccounts,
   updateAccount,
 } from '../services/accounts.service.js';
+import { createContacts, listAccountContacts } from '../services/contacts.service.js';
+import { quickAdd } from '../services/quickAdd.service.js';
 import { sendCreated, sendList, sendOk } from '../lib/respond.js';
 
 // GET /api/accounts: the accounts the signed-in person may see, with filters, sort and pages.
@@ -27,6 +29,24 @@ export async function getAccountById(req, res) {
 // POST /api/accounts: create an account. 409 when a company with a similar name exists.
 export async function postAccount(req, res) {
   sendCreated(res, await createAccount(req.user, req.validated.body, { requestId: req.id }));
+}
+
+// POST /api/accounts/quick-add: a company and its people from the one "New" form.
+export async function postQuickAdd(req, res) {
+  sendCreated(res, await quickAdd(req.user, req.validated.body, { requestId: req.id }));
+}
+
+// GET /api/accounts/:id/contacts: the people of one account.
+export async function getAccountContacts(req, res) {
+  sendOk(res, await listAccountContacts(req.user, req.validated.params.id));
+}
+
+// POST /api/accounts/:id/contacts: add one person to an account.
+export async function postAccountContact(req, res) {
+  const [contact] = await createContacts(req.user, req.validated.params.id, [req.validated.body], {
+    requestId: req.id,
+  });
+  sendCreated(res, contact);
 }
 
 // PATCH /api/accounts/:id: change an account.

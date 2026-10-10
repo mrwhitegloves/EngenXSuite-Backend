@@ -4,6 +4,7 @@ import {
   COMPANY_SIZES,
   RELATIONSHIP_HEALTH,
 } from '../models/account.model.js';
+import { Contact } from '../models/contact.model.js';
 import { AccountStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
@@ -65,7 +66,11 @@ const uniqueIds = (ids) => [...new Set(ids.filter(Boolean).map(String))];
  */
 async function loadLookups(accounts) {
   const userIds = uniqueIds(
-    accounts.flatMap((account) => [account.ownerId, ...(account.assignedUserIds ?? [])]),
+    accounts.flatMap((account) => [
+      account.ownerId,
+      account.formFilledBy,
+      ...(account.assignedUserIds ?? []),
+    ]),
   );
   const statusIds = uniqueIds(accounts.map((account) => account.statusId));
   const parentIds = uniqueIds(accounts.map((account) => account.parentAccountId));
@@ -130,7 +135,7 @@ function toDetailView(account, actor, lookups) {
     companyType: account.companyType ?? null,
     website: account.website ?? null,
     linkedinUrl: account.linkedinUrl ?? null,
-    phone: account.phone ?? null,
+    phone_number: account.phone_number ?? null,
     email: account.email ?? null,
     hq: account.hq ?? null,
     region: account.region ?? null,
@@ -148,6 +153,8 @@ function toDetailView(account, actor, lookups) {
     commercial: account.commercial ?? null,
     source: account.source,
     sourceDetail: account.sourceDetail ?? null,
+    // Who typed the account into a form; null when it came from an ad, the website or a file.
+    formFilledBy: person(account.formFilledBy, lookups),
     owner: person(account.ownerId, lookups),
     assignedUsers: (account.assignedUserIds ?? []).map((id) => person(id, lookups)),
     tagIds: (account.tagIds ?? []).map(String),
@@ -171,7 +178,7 @@ async function detailOf(account, actor) {
  * Load one account for an action. Outside the user's view scope: "not found" (404).
  * Visible but the action is not allowed on it: "forbidden" (403).
  */
-async function loadForAction(actor, accountId, action) {
+export async function loadAccountForAction(actor, accountId, action) {
   const account = await Account.findOne({ _id: accountId, ...NOT_DELETED }).lean();
   const record = { feature: FEATURE, record: account };
   if (!account || !can(actor, 'view', record)) throw notFound('Account not found');
@@ -310,7 +317,7 @@ export async function getAccountFormOptions(actor) {
 }
 
 export async function getAccount(actor, accountId) {
-  return detailOf(await loadForAction(actor, accountId, 'view'), actor);
+  return detailOf(await loadAccountForAction(actor, accountId, 'view'), actor);
 }
 
 /**
@@ -347,6 +354,8 @@ export async function createAccount(actor, data, context = {}) {
     assignedUserIds,
     source: 'manual',
     createdBy: actor._id,
+    // A person typed this account into a form: record who (decision 0013).
+    formFilledBy: actor._id,
   });
 
   await writeAudit({
@@ -375,7 +384,7 @@ export async function createAccount(actor, data, context = {}) {
  * @param {{ requestId?: string }} [context]
  */
 export async function updateAccount(actor, accountId, changes, context = {}) {
-  const account = await loadForAction(actor, accountId, 'edit');
+  const account = await loadAccountForAction(actor, accountId, 'edit');
   const { confirmDuplicate, ...requested } = changes;
 
   // The value each requested field would have after the change.
@@ -512,7 +521,7 @@ export function registerAccountDeleteBlocker(check) {
  * companies that name it as their parent).
  */
 export async function deleteAccount(actor, accountId, context = {}) {
-  const account = await loadForAction(actor, accountId, 'delete');
+  const account = await loadAccountForAction(actor, accountId, 'delete');
 
   const children = await Account.countDocuments({ parentAccountId: account._id, ...NOT_DELETED });
   const reasons = (await Promise.all(deleteBlockers.map((check) => check(account._id)))).filter(
@@ -527,10 +536,10 @@ export async function deleteAccount(actor, accountId, context = {}) {
     throw conflict(`This account cannot be deleted yet: ${reasons.join(' ')}`);
   }
 
-  await Account.updateOne(
-    { _id: account._id },
-    { $set: { deletedAt: new Date(), deletedBy: actor._id } },
-  );
+  const deletion = { deletedAt: new Date(), deletedBy: actor._id };
+  await Account.updateOne({ _id: account._id }, { $set: deletion });
+  // Its people are hidden with it (and nothing else can reach them without the account).
+  await Contact.updateMany({ accountId: account._id, deletedAt: null }, { $set: deletion });
   await writeAudit({
     actor,
     action: 'account.deleted',

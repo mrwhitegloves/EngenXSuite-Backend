@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { ACCOUNT_POTENTIALS, COMPANY_SIZES, RELATIONSHIP_HEALTH } from '../models/account.model.js';
 import { normalizePhone } from '../lib/phone.js';
 import { dateRange, email, objectId, pagination, sortBy } from './common.js';
+import { createContactBody } from './contacts.js';
 
 // Short free text. An empty text clears the field (null).
 const text = (max = 200) =>
@@ -108,7 +109,7 @@ const fields = {
   companyType: text(100),
   website,
   linkedinUrl,
-  phone,
+  phone_number: phone,
   email: z.union([emptyToNull, email]).nullable(),
   hq: address,
   region: text(100),
@@ -147,6 +148,12 @@ export const updateAccountBody = z
   .refine((body) => Object.keys(body).some((key) => key !== 'confirmDuplicate'), {
     message: 'Nothing to update',
   });
+
+// The "New" form in the top bar: a company and up to 10 of its people in one go.
+export const quickAddBody = z.object({
+  account: createAccountBody,
+  contacts: z.array(createContactBody).max(10, 'At most 10 people at once').default([]),
+});
 
 // The columns the Accounts list can be sorted by.
 export const ACCOUNT_SORTS = ['name', 'accountCode', 'createdAt', 'lastActivityAt'];

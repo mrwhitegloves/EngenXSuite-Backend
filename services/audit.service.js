@@ -1,5 +1,6 @@
 import { Account } from '../models/account.model.js';
 import { AuditLog } from '../models/auditLog.model.js';
+import { Contact } from '../models/contact.model.js';
 import { Role } from '../models/role.model.js';
 import { AccountStatus, LeadStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
@@ -49,7 +50,7 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
   const idsOf = (type) =>
     entries.filter((entry) => entry.entityType === type).map((entry) => entry.entityId);
   const actorIds = entries.map((entry) => entry.userId).filter(Boolean);
-  const [userNames, roleNames, accountNames, accountStatusNames, leadStatusNames] =
+  const [userNames, roleNames, accountNames, accountStatusNames, leadStatusNames, contactNames] =
     await Promise.all([
       loadNames(User, NAME_SOURCES.users.field, [...actorIds, ...idsOf('users')]),
       loadNames(Role, NAME_SOURCES.roles.field, idsOf('roles')),
@@ -57,6 +58,7 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
       loadNames(Account, NAME_SOURCES.accounts.field, idsOf('accounts')),
       loadNames(AccountStatus, 'name', idsOf('account_statuses')),
       loadNames(LeadStatus, 'name', idsOf('lead_statuses')),
+      loadNames(Contact, 'name', idsOf('contacts')),
     ]);
   const entityNames = {
     users: userNames,
@@ -64,6 +66,7 @@ export async function listAuditLogs({ page, pageSize, userId, entityType, action
     accounts: accountNames,
     account_statuses: accountStatusNames,
     lead_statuses: leadStatusNames,
+    contacts: contactNames,
   };
 
   const items = entries.map((entry) => ({

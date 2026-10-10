@@ -37,7 +37,8 @@ const accountSchema = new mongoose.Schema(
     website: { type: String, trim: true },
     linkedinUrl: { type: String, trim: true },
     // The company's own main number and general email (people's own are on their contact).
-    phone: { type: String, trim: true },
+    // The database name of every phone field is phone_number (decision 0013, lib/fieldNames.js).
+    phone_number: { type: String, trim: true },
     email: { type: String, trim: true, lowercase: true },
     // The group company this one belongs to, if any.
     parentAccountId: { type: ObjectId, ref: 'Account' },
@@ -114,6 +115,9 @@ const accountSchema = new mongoose.Schema(
     // A saved copy of "when did anything last happen here"; only the activity service writes it.
     lastActivityAt: { type: Date },
     createdBy: { type: ObjectId, ref: 'User' },
+    // The user who filled in the form that created this account by hand (decision 0013).
+    // Empty for accounts that came from an ad, the website or a file import.
+    formFilledBy: { type: ObjectId, ref: 'User' },
     // Soft delete: a deleted account keeps its history but disappears from every screen.
     deletedAt: { type: Date, default: null },
     deletedBy: { type: ObjectId, ref: 'User' },
@@ -126,7 +130,7 @@ accountSchema.index({ ownerId: 1 });
 accountSchema.index({ assignedUserIds: 1 });
 accountSchema.index({ statusId: 1 });
 accountSchema.index({ parentAccountId: 1 }, { sparse: true });
-accountSchema.index({ phone: 1 }, { sparse: true });
+accountSchema.index({ phone_number: 1 }, { sparse: true });
 accountSchema.index({ email: 1 }, { sparse: true });
 accountSchema.index({ tagIds: 1 });
 accountSchema.index({ industry: 1 });
