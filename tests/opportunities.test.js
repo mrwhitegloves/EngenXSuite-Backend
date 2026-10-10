@@ -586,3 +586,145 @@ describe('the pipeline board and the stage history', () => {
     expect((await asOther.get(`/api/opportunities/${lead.id}/stage-history`)).status).toBe(404);
   });
 });
+
+describe('the "New" form with a lead', () => {
+  it('creates the company, its people and the first lead together', async () => {
+    const response = await asAgent.post('/api/accounts/quick-add').send({
+      account: { name: 'Thermax' },
+      contacts: [{ name: 'Rajesh Sen', phone_number: '9123456780' }, { name: 'Second Person' }],
+      lead: {
+        name: 'Boiler monitoring',
+        estimatedValuePaise: 90000000,
+        requirement: 'Pilot first',
+      },
+    });
+    expect(response.status).toBe(201);
+    const { account, contacts, lead } = response.body.data;
+    expect(contacts).toHaveLength(2);
+    expect(lead).toMatchObject({
+      leadCode: 'EGL-10001',
+      name: 'Boiler monitoring',
+      account: { id: account.id, name: 'Thermax' },
+      // The first person of the form is the lead's main contact.
+      primaryContact: { name: 'Rajesh Sen', phone_number: '+919123456780' },
+      stage: { name: 'Lead' },
+      owner: { name: 'Asha Agent' },
+      estimatedValuePaise: 90000000,
+    });
+    // Without a lead part, none is made.
+    const plain = await asAgent
+      .post('/api/accounts/quick-add')
+      .send({ account: { name: 'Plain Co' } });
+    expect(plain.body.data.lead).toBeNull();
+    expect(await Opportunity.countDocuments()).toBe(1);
+  });
+
+  it('when the lead cannot be saved, the company and its people are not left behind', async () => {
+    const before = await asAgent.get('/api/accounts');
+    const response = await asAgent.post('/api/accounts/quick-add').send({
+      account: { name: 'Half Saved Co' },
+      contacts: [{ name: 'Someone' }],
+      // A new lead cannot start as won.
+      lead: { name: 'Bad lead', stageId: stageId('won') },
+    });
+    expect(response.status).toBe(400);
+    expect(response.body.error.details[0].field).toBe('stageId');
+    expect((await asAgent.get('/api/accounts')).body.meta.total).toBe(before.body.meta.total);
+    expect((await asAgent.get('/api/accounts?search=Half')).body.data).toEqual([]);
+    expect(await Opportunity.countDocuments()).toBe(0);
+    // The corrected form goes through, without a "similar name" warning about its own first try.
+    const again = await asAgent.post('/api/accounts/quick-add').send({
+      account: { name: 'Half Saved Co' },
+      contacts: [{ name: 'Someone' }],
+      lead: { name: 'Good lead' },
+    });
+    expect(again.status).toBe(201);
+    expect(
+      (
+        await asAgent
+          .post('/api/accounts/quick-add')
+          .send({ account: { name: 'X' }, lead: { name: '' } })
+      ).status,
+    ).toBe(400);
+  });
+});
+
+describe('editing the company and the main contact from the lead form', () => {
+  it('saves all three through their own services, and says what the person may change', async () => {
+    const lead = await makeLead(asAgent, { primaryContactId: contactId });
+    const before = (await asAgent.get(`/api/opportunities/${lead.id}`)).body.data;
+    expect(before).toMatchObject({ canEditAccount: true, canEditContact: true });
+    expect(before.accountDetails).toMatchObject({ industry: null, city: null });
+
+    const saved = await asAgent.patch(`/api/opportunities/${lead.id}`).send({
+      requirement: 'OEE on 12 presses',
+      contact: { designation: 'Plant Head', phone_number: '91234 56780' },
+      account: { industry: 'Forging', hq: { city: 'Pune' } },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data).toMatchObject({
+      requirement: 'OEE on 12 presses',
+      primaryContact: { designation: 'Plant Head', phone_number: '+919123456780' },
+      accountDetails: { industry: 'Forging', city: 'Pune' },
+    });
+    const actions = (await AuditLog.find().lean()).map((entry) => entry.action);
+    expect(actions).toEqual(
+      expect.arrayContaining(['account.updated', 'contact.updated', 'lead.updated']),
+    );
+
+    // Only the company part is sent: the lead itself is left as it is.
+    const onlyCompany = await asAgent
+      .patch(`/api/opportunities/${lead.id}`)
+      .send({ account: { website: 'bharatforge.com' } });
+    expect(onlyCompany.body.data.accountDetails.website).toBe('https://bharatforge.com');
+  });
+
+  it('a wrong value in the contact or company part stops the whole save', async () => {
+    const lead = await makeLead(asAgent, { primaryContactId: contactId });
+    const response = await asAgent.patch(`/api/opportunities/${lead.id}`).send({
+      requirement: 'Must not be saved',
+      contact: { phone_number: '12345' },
+    });
+    expect(response.status).toBe(400);
+    expect((await Opportunity.findById(lead.id).lean()).requirement).toBeUndefined();
+
+    const noContact = await makeLead(asAgent, { name: 'No contact' });
+    const refused = await asAgent
+      .patch(`/api/opportunities/${noContact.id}`)
+      .send({ contact: { designation: 'X' } });
+    expect(refused.status).toBe(400);
+  });
+
+  it('someone assigned to the lead but not to its company cannot change the company through it', async () => {
+    // The CEO's own company; the lead on it is given to the agent.
+    const company = (
+      await asCeo
+        .post('/api/accounts/quick-add')
+        .send({ account: { name: 'Tata Steel' }, contacts: [{ name: 'Their Person' }] })
+    ).body.data;
+    const lead = (
+      await asCeo.post('/api/opportunities').send({
+        name: 'Given to the agent',
+        accountId: company.account.id,
+        primaryContactId: company.contacts[0].id,
+        ownerId: String(agent._id),
+      })
+    ).body.data;
+
+    const seen = (await asAgent.get(`/api/opportunities/${lead.id}`)).body.data;
+    expect(seen).toMatchObject({ canEditAccount: false, canEditContact: false });
+    // The lead's own fields: yes. The company and its person: no.
+    expect(
+      (await asAgent.patch(`/api/opportunities/${lead.id}`).send({ requirement: 'Mine to edit' }))
+        .status,
+    ).toBe(200);
+    for (const body of [
+      { account: { industry: 'Changed' } },
+      { contact: { designation: 'Changed' } },
+    ]) {
+      expect((await asAgent.patch(`/api/opportunities/${lead.id}`).send(body)).status).toBe(404);
+    }
+    const untouched = (await asCeo.get(`/api/accounts/${company.account.id}`)).body.data;
+    expect(untouched.industry ?? null).toBeNull();
+  });
+});

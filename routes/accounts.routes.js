@@ -19,9 +19,9 @@ import {
   createAccountBody,
   exportAccountsQuery,
   listAccountsQuery,
-  quickAddBody,
   updateAccountBody,
 } from '../validation/accounts.js';
+import { quickAddBody } from '../validation/quickAdd.js';
 import { createContactBody } from '../validation/contacts.js';
 import { createPlantBody } from '../validation/plants.js';
 import { getAccountPlants, postAccountPlant } from '../controllers/plants.controller.js';

@@ -8,7 +8,9 @@ import {
   SCOPE_LEVELS,
   STAGE_CHANGE_VIA,
 } from '../models/opportunity.model.js';
+import { updateAccountBody } from './accounts.js';
 import { dateRange, objectId, pagination, sortBy } from './common.js';
+import { updateContactBody } from './contacts.js';
 import { tagIds } from './tags.js';
 
 // Free text. An empty text clears the field (null).
@@ -105,6 +107,10 @@ export const updateLeadBody = z
     ...optionalFields,
     stageId: objectId.optional(),
     ...closing,
+    // Changes to the lead's main contact and to its company, made in the same form. They are
+    // saved through the contact and account services, with those records' own permissions.
+    contact: updateContactBody.optional(),
+    account: updateAccountBody.optional(),
     // The lead's `updatedAt` as the form received it. When someone else saved in between, the
     // save is refused (409) unless `overwrite` is sent after the person saw the newer values.
     expectedUpdatedAt: moment.optional(),

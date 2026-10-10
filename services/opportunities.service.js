@@ -26,8 +26,13 @@ import { PlantUnit } from '../models/plantUnit.model.js';
 import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { LeadStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
-import { loadAccountForAction, registerAccountDeleteBlocker } from './accounts.service.js';
+import {
+  loadAccountForAction,
+  registerAccountDeleteBlocker,
+  updateAccount,
+} from './accounts.service.js';
 import { recordSystemActivity } from './activities.service.js';
+import { updateContact } from './contacts.service.js';
 import { notify } from './notifications.service.js';
 import { moveToStage, startingStage, writeFirstStage } from './stage.service.js';
 import { assertUsableTags, loadTagsById } from './tags.service.js';
@@ -108,7 +113,7 @@ async function loadLookups(leads) {
       find(
         Account,
         ids((lead) => [lead.accountId]),
-        'name accountCode',
+        'name accountCode industry phone_number email website hq.city ownerId assignedUserIds',
       ),
       find(
         Plant,
@@ -221,6 +226,7 @@ function toListView(lead, lookups, actor) {
 
 /** Everything about one lead. */
 function toDetailView(lead, lookups, actor) {
+  const account = lookups.accounts.get(String(lead.accountId));
   return {
     ...toListView(lead, lookups, actor),
     problemStatement: lead.problemStatement ?? null,
@@ -235,6 +241,23 @@ function toDetailView(lead, lookups, actor) {
       contact: named(lookups.contacts, item.contactId),
       buyingRole: item.buyingRole ?? null,
     })),
+    // The company's basic details, and whether this person may change the company and the
+    // main contact from the lead form (the same rights as on their own screens).
+    accountDetails: account
+      ? {
+          industry: account.industry ?? null,
+          phone_number: account.phone_number ?? null,
+          email: account.email ?? null,
+          website: account.website ?? null,
+          city: account.hq?.city ?? null,
+        }
+      : null,
+    canEditAccount:
+      Boolean(account) && can(actor, 'edit', { feature: 'accounts', record: account }),
+    canEditContact:
+      Boolean(account && lead.primaryContactId) &&
+      can(actor, 'view', { feature: 'accounts', record: account }) &&
+      can(actor, 'edit', { feature: 'contacts' }),
     closedAt: lead.closedAt ?? null,
     closeReason: lead.closeReason ?? null,
     lostToCompetitor: lead.lostToCompetitor ?? null,
@@ -565,6 +588,8 @@ export async function updateLead(actor, leadId, changes, context = {}) {
     closeReason,
     lostToCompetitor,
     via,
+    contact: contactChanges,
+    account: accountChanges,
     ...requested
   } = changes;
 
@@ -573,6 +598,16 @@ export async function updateLead(actor, leadId, changes, context = {}) {
     throw conflict('Someone else changed this lead while you were editing it.', [
       { code: 'STALE_DATA', message: 'The lead was changed by someone else.' },
     ]);
+  }
+
+  // The company and the main contact first, through their own services (their rules and their
+  // permissions): if one of them refuses, nothing of the lead has been changed yet.
+  if (accountChanges) await updateAccount(actor, lead.accountId, accountChanges, context);
+  if (contactChanges) {
+    if (!lead.primaryContactId) {
+      throw fieldProblem('primaryContactId', 'This lead has no main contact to change');
+    }
+    await updateContact(actor, lead.primaryContactId, contactChanges, context);
   }
 
   const plan = planChanges(lead, requested, { nested: NESTED_FIELDS });
@@ -670,7 +705,7 @@ export async function updateLead(actor, leadId, changes, context = {}) {
     stageChanged = moved.changed;
   }
 
-  if (update || stageChanged) announce();
+  if (update || stageChanged || accountChanges || contactChanges) announce();
   return detailOf(await Opportunity.findById(lead._id).lean(), actor);
 }
 
