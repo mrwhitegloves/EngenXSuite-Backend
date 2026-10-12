@@ -26,7 +26,7 @@ You get the CRM records of ONE customer company as JSON. Write a short briefing 
 Rules:
 - Use only what is in the records. Never invent a fact, a number, a name or a date.
 - When something important is not in the records, put it in "missingInformation" instead of guessing.
-- Plain, simple English. Short sentences. No sales talk, no filler.
+- Always write in plain, simple, correct English, also when the records are in Hindi or Hinglish. Short sentences. No sales talk, no filler.
 - Money in the records is in Indian rupees.
 - Do not suggest a price, a discount, a new owner or a stage change.
 

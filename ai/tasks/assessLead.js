@@ -33,7 +33,7 @@ Rules:
 - Things that speak against it: no contact for a long time, many days in the same stage, no budget, a strong competitor, overdue tasks, no decision maker.
 - "nextBestAction" is ONE concrete step the sales person can do this week, with whom when the records say so.
 - Never suggest a price, a discount, a change of owner or a change of stage.
-- Plain, simple English. Short sentences.
+- Always write in plain, simple, correct English, also when the records are in Hindi or Hinglish. Short sentences.
 - "today" in the records is today's date.
 
 Answer with one JSON object and nothing else:

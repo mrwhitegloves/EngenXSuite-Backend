@@ -19,6 +19,7 @@ const isChoice = (id) => AI_MODEL_CHOICES.some((choice) => choice.id === id);
 
 /**
  * @returns {Promise<{ monthlyCapPaise: number, dailyRunsPerUser: number, alertPercent: number,
+ *                     autoRefresh: boolean,
  *                     models: Record<string, { model: string, fallback: string | null }> }>}
  */
 export async function getAiSettings() {
@@ -42,6 +43,8 @@ export async function getAiSettings() {
     monthlyCapPaise: saved.monthlyCapPaise ?? AI_DEFAULT_MONTHLY_CAP_PAISE,
     dailyRunsPerUser: saved.dailyRunsPerUser ?? AI_DEFAULT_DAILY_RUNS_PER_USER,
     alertPercent: saved.alertPercent ?? AI_DEFAULT_ALERT_PERCENT,
+    // Ask the AI again by itself when something happens on a record that has an insight.
+    autoRefresh: saved.autoRefresh ?? true,
     models,
   };
 }

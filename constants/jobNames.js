@@ -10,4 +10,5 @@ export const JOB_NAMES = {
   importRun: 'import.run',
   importUndo: 'import.undo',
   taskReminders: 'tasks.reminders',
+  insightRefresh: 'ai.insight-refresh',
 };

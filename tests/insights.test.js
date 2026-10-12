@@ -23,13 +23,16 @@ vi.stubGlobal('fetch', async (url, options) => {
 
 const { createApp } = await import('../app.js');
 const { createSessionMiddleware } = await import('../middleware/session.js');
+const { AiFeedback } = await import('../models/aiFeedback.model.js');
 const { AiInsight } = await import('../models/aiInsight.model.js');
 const { AiRun } = await import('../models/aiRun.model.js');
 const { AuditLog } = await import('../models/auditLog.model.js');
 const { Opportunity } = await import('../models/opportunity.model.js');
 const { Role } = await import('../models/role.model.js');
+const { Task } = await import('../models/task.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed, seedStartingLists, seedStatusLists } = await import('../seeds/seed.js');
+const { autoRefreshInsight } = await import('../services/insights.service.js');
 const { clearTestDb, startTestDbWithTransactions, stopTestDb } =
   await import('./helpers/testDb.js');
 
@@ -277,5 +280,117 @@ describe('Settings → AI', () => {
     expect((await asAgent.patch('/api/settings/ai').send({ dailyRunsPerUser: 999 })).status).toBe(
       403,
     );
+  });
+});
+
+describe('what people think of an AI answer', () => {
+  it('useful, not useful, or what it should have said: one opinion per person, shown back', async () => {
+    answers = [SUMMARY];
+    const made = (await asAgent.post(`/api/insights/accounts/${accountId}/refresh`)).body.data
+      .insight;
+    expect(made.myFeedback).toBeNull();
+    const say = (client, body) => client.post(`/api/insights/${made.id}/feedback`).send(body);
+
+    expect((await say(asAgent, { verdict: 'accepted' })).body.data.insight.myFeedback).toEqual({
+      verdict: 'accepted',
+      note: null,
+      taskId: null,
+    });
+    // A second opinion replaces the first; a correction needs its text.
+    expect((await say(asAgent, { verdict: 'edited' })).status).toBe(400);
+    const corrected = await say(asAgent, {
+      verdict: 'edited',
+      note: 'They make castings, not forgings.',
+    });
+    expect(corrected.body.data.insight.myFeedback).toMatchObject({
+      verdict: 'edited',
+      note: 'They make castings, not forgings.',
+    });
+    expect(await AiFeedback.countDocuments()).toBe(1);
+    expect(await AiFeedback.findOne().lean()).toMatchObject({ task: 'summarizeAccount' });
+    expect((await say(asAgent, { verdict: 'maybe' })).status).toBe(400);
+    // Someone who may not see the company cannot say anything about its summary.
+    expect((await say(asOther, { verdict: 'rejected' })).status).toBe(404);
+
+    // Settings → AI counts the opinions.
+    const row = (await asCeo.get('/api/settings/ai')).body.data.usage.byTask[0];
+    expect(row).toMatchObject({ task: 'summarizeAccount', useful: 0, corrected: 1, notUseful: 0 });
+  });
+
+  it('the next best action becomes my task through the normal task service, once', async () => {
+    answers = [ASSESSMENT];
+    const made = (await asAgent.post(`/api/insights/leads/${leadId}/refresh`)).body.data.insight;
+    const accepted = await asAgent.post(`/api/insights/${made.id}/accept-action`);
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.data.insight.myFeedback).toMatchObject({ verdict: 'accepted' });
+
+    const task = await Task.findOne({ source: 'ai' }).lean();
+    expect(task).toMatchObject({
+      title: 'Call Asha Verma to ask about the budget',
+      description: 'Suggested by AI. Why: Budget is unknown',
+      type: 'follow_up',
+      status: 'open',
+    });
+    expect(String(task.opportunityId)).toBe(leadId);
+    expect(accepted.body.data.insight.myFeedback.taskId).toBe(String(task._id));
+    expect(await AuditLog.countDocuments({ action: 'ai.suggestion_accepted' })).toBe(1);
+
+    expect((await asAgent.post(`/api/insights/${made.id}/accept-action`)).status).toBe(409);
+    expect((await asOther.post(`/api/insights/${made.id}/accept-action`)).status).toBe(404);
+    expect(await Task.countDocuments({ source: 'ai' })).toBe(1);
+    // A company summary has no next step to accept.
+    answers = [SUMMARY];
+    const summary = (await asAgent.post(`/api/insights/accounts/${accountId}/refresh`)).body.data
+      .insight;
+    expect((await asAgent.post(`/api/insights/${summary.id}/accept-action`)).status).toBe(409);
+  });
+});
+
+describe('keeping insights up to date', () => {
+  const older = (minutes) =>
+    AiInsight.updateMany({}, { $set: { generatedAt: new Date(Date.now() - minutes * 60 * 1000) } });
+
+  it('says when the record changed since the answer was written', async () => {
+    answers = [ASSESSMENT];
+    const made = (await asAgent.post(`/api/insights/leads/${leadId}/refresh`)).body.data.insight;
+    expect(made.isStale).toBe(false);
+    await older(10);
+    await asAgent
+      .post('/api/notes')
+      .send({ opportunityId: leadId, content: 'The owner agreed to meet.' });
+    expect((await asAgent.get(`/api/insights/leads/${leadId}`)).body.data.insight.isStale).toBe(
+      true,
+    );
+  });
+
+  it('the system asks again by itself: only for an existing, older insight of an open lead', async () => {
+    const lead = { kind: 'lead', id: leadId };
+    expect(await autoRefreshInsight(lead)).toBe('nobody asked for this one yet');
+    answers = [ASSESSMENT];
+    await asAgent.post(`/api/insights/leads/${leadId}/refresh`);
+    expect(await autoRefreshInsight(lead)).toBe('fresh enough');
+
+    await older(30);
+    answers = [{ ...ASSESSMENT, score: 71 }];
+    expect(await autoRefreshInsight(lead)).toBe('refreshed');
+    expect((await Opportunity.findById(leadId).lean()).aiScore).toBe(71);
+    const shown = (await asAgent.get(`/api/insights/leads/${leadId}`)).body.data.insight;
+    expect(shown).toMatchObject({ content: { score: 71 }, generatedBy: null });
+    // The run is nobody's: it does not use up a person's daily number.
+    expect(await AiRun.countDocuments({ userId: null })).toBe(1);
+
+    // Switched off in Settings → AI: nothing is asked.
+    await asCeo.patch('/api/settings/ai').send({ autoRefresh: false });
+    await older(30);
+    expect(await autoRefreshInsight(lead)).toBe('switched off');
+    expect(sent).toHaveLength(2);
+    expect((await asCeo.get('/api/settings/ai')).body.data.autoRefresh).toBe(false);
+  });
+
+  it('the saved score and risk travel with the lead, for the board and the lists', async () => {
+    answers = [ASSESSMENT];
+    await asAgent.post(`/api/insights/leads/${leadId}/refresh`);
+    const listed = (await asAgent.get('/api/opportunities')).body.data[0];
+    expect(listed).toMatchObject({ aiScore: 62, aiRiskLevel: 'medium' });
   });
 });

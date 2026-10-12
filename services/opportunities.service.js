@@ -214,6 +214,9 @@ function toListView(lead, lookups, actor) {
     expectedCloseDate: lead.expectedCloseDate ?? null,
     nextAction: lead.nextAction ?? null,
     risk: lead.risk ?? null,
+    // A saved copy of the newest AI assessment (services/insights.service.js).
+    aiScore: lead.aiScore ?? null,
+    aiRiskLevel: lead.aiRiskLevel ?? null,
     lastActivityAt: lead.lastActivityAt ?? null,
     createdAt: lead.createdAt,
     updatedAt: lead.updatedAt,

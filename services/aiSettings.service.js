@@ -8,6 +8,7 @@ import {
 import { getAiSettings, isAiReady } from '../ai/settings.js';
 import { writeAudit } from '../lib/audit.js';
 import { badRequest } from '../lib/errors.js';
+import { AiFeedback } from '../models/aiFeedback.model.js';
 import { AiUsageMonthly } from '../models/aiUsage.model.js';
 import { Settings } from '../models/settings.model.js';
 
@@ -16,15 +17,26 @@ import { Settings } from '../models/settings.model.js';
 
 /** What Settings → AI shows. */
 export async function getAiSettingsView(now = new Date()) {
-  const [settings, usage] = await Promise.all([
+  const [settings, usage, opinions] = await Promise.all([
     getAiSettings(),
     AiUsageMonthly.findOne({ month: indiaMonth(now) }).lean(),
+    // What people said about the answers in the last 30 days, per kind of work.
+    AiFeedback.aggregate([
+      { $match: { updatedAt: { $gte: new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000) } } },
+      { $group: { _id: { task: '$task', verdict: '$verdict' }, count: { $sum: 1 } } },
+    ]),
   ]);
+  const opinionsOf = (task) => {
+    const count = (verdict) =>
+      opinions.find((item) => item._id.task === task && item._id.verdict === verdict)?.count ?? 0;
+    return { useful: count('accepted'), corrected: count('edited'), notUseful: count('rejected') };
+  };
   return {
     isAiReady: isAiReady(),
     monthlyCapPaise: settings.monthlyCapPaise,
     dailyRunsPerUser: settings.dailyRunsPerUser,
     alertPercent: settings.alertPercent,
+    autoRefresh: settings.autoRefresh,
     // One line per class of work: what it is for, and the two models chosen for it.
     classes: AI_MODEL_CLASS_KEYS.map((key) => ({
       key,
@@ -46,7 +58,12 @@ export async function getAiSettingsView(now = new Date()) {
       totalCostPaise: usage?.totalCostPaise ?? 0,
       runs: usage?.runs ?? 0,
       byTask: Object.entries(usage?.byTask ?? {})
-        .map(([task, value]) => ({ task, costPaise: value.costPaise ?? 0, runs: value.runs ?? 0 }))
+        .map(([task, value]) => ({
+          task,
+          costPaise: value.costPaise ?? 0,
+          runs: value.runs ?? 0,
+          ...opinionsOf(task),
+        }))
         .sort((a, b) => b.costPaise - a.costPaise),
     },
   };

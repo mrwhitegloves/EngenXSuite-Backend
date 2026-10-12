@@ -1,6 +1,8 @@
 import { sendOk } from '../lib/respond.js';
 import { getAiSettingsView, updateAiSettings } from '../services/aiSettings.service.js';
 import {
+  acceptNextAction,
+  giveFeedback,
   getAccountSummary,
   getLeadAssessment,
   refreshAccountSummary,
@@ -28,6 +30,16 @@ export async function getLeadInsight(req, res) {
 // POST /api/insights/leads/:id/refresh: ask the AI to assess the lead again.
 export async function postLeadInsight(req, res) {
   sendOk(res, await refreshLeadAssessment(req.user, req.validated.params.id));
+}
+
+// POST /api/insights/:id/feedback: useful, not useful, or what it should have said.
+export async function postFeedback(req, res) {
+  sendOk(res, await giveFeedback(req.user, req.validated.params.id, req.validated.body));
+}
+
+// POST /api/insights/:id/accept-action: make a task of the suggested next step.
+export async function postAcceptAction(req, res) {
+  sendOk(res, await acceptNextAction(req.user, req.validated.params.id, { requestId: req.id }));
 }
 
 // GET /api/settings/ai

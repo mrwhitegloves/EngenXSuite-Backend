@@ -48,6 +48,8 @@ const settingsSchema = new mongoose.Schema(
       dailyRunsPerUser: { type: Number, min: 0 },
       // The people who manage the settings are warned when this much of the budget is used.
       alertPercent: { type: Number, min: 1, max: 99 },
+      // Refresh an insight by itself after something happened on its record.
+      autoRefresh: { type: Boolean },
       // Per class of work (fast, balanced, strong): { model, fallback }, ids from ai/config.js.
       models: { type: mongoose.Schema.Types.Mixed },
     },

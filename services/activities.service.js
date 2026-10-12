@@ -1,5 +1,7 @@
+import { JOB_NAMES } from '../constants/jobNames.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { logger } from '../infra/logger.js';
+import { enqueue } from '../infra/queues.js';
 import { emitToAll } from '../infra/realtime.js';
 import { Account } from '../models/account.model.js';
 import { Activity } from '../models/activity.model.js';
@@ -78,7 +80,37 @@ export async function recordActivity(entry) {
       ),
   ]);
   emitToAll(SOCKET_EVENTS.activitiesChanged);
+  requestInsightRefresh(links);
   return activity.toObject();
+}
+
+// One refresh per record and half hour at most, a few minutes after the news (more may follow).
+const INSIGHT_REFRESH_BUCKET_MS = 30 * 60 * 1000;
+const INSIGHT_REFRESH_DELAY_MS = 5 * 60 * 1000;
+
+/**
+ * News on a record: its AI insights (when it has any) are refreshed by a background job. Only
+ * ids go into the job; whether anything is done is decided there. Without a queue nothing
+ * happens, and the insight simply shows "the records changed since this was written".
+ */
+function requestInsightRefresh({ opportunityId, accountId }) {
+  const bucket = Math.floor(Date.now() / INSIGHT_REFRESH_BUCKET_MS);
+  const targets = [
+    opportunityId && ['lead', opportunityId],
+    accountId && ['account', accountId],
+  ].filter(Boolean);
+  for (const [kind, id] of targets) {
+    Promise.resolve()
+      .then(() =>
+        enqueue(
+          'ai',
+          JOB_NAMES.insightRefresh,
+          { kind, id: String(id) },
+          { jobId: `insight-${kind}-${id}-${bucket}`, delayMs: INSIGHT_REFRESH_DELAY_MS },
+        ),
+      )
+      .catch(() => {});
+  }
 }
 
 /**

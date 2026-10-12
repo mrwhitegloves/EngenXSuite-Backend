@@ -4,7 +4,9 @@ import {
   getAiSettings,
   getLeadInsight,
   patchAiSettings,
+  postAcceptAction,
   postAccountInsight,
+  postFeedback,
   postLeadInsight,
 } from '../controllers/insights.controller.js';
 import { authorize } from '../middleware/authorize.js';
@@ -12,7 +14,7 @@ import { createAiLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
-import { updateAiSettingsBody } from '../validation/insights.js';
+import { feedbackBody, updateAiSettingsBody } from '../validation/insights.js';
 
 // ── AI insights about one record. authorize() answers "may this person use AI insights at
 // all"; whether they may see that company or lead is decided in the service (404 when not).
@@ -38,6 +40,15 @@ insightsRouter.post(
   byId,
   postLeadInsight,
 );
+
+// What a person thinks of an answer (":id" is the insight's id).
+insightsRouter.post(
+  '/:id/feedback',
+  authorize(FEATURE, 'view'),
+  validate({ params: idParams, body: feedbackBody }),
+  postFeedback,
+);
+insightsRouter.post('/:id/accept-action', authorize(FEATURE, 'view'), byId, postAcceptAction);
 
 // ── Settings → AI.
 export const aiSettingsRouter = Router();

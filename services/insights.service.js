@@ -1,9 +1,16 @@
-import { isAiReady } from '../ai/settings.js';
+import { getAiSettings, isAiReady } from '../ai/settings.js';
 import { assessLead } from '../ai/tasks/assessLead.js';
 import { summarizeAccount } from '../ai/tasks/summarizeAccount.js';
+import { logger } from '../infra/logger.js';
+import { writeAudit } from '../lib/audit.js';
+import { can } from '../lib/can.js';
+import { conflict, forbidden, notFound } from '../lib/errors.js';
 import { scopeFilter } from '../lib/scopeFilter.js';
+import { systemActor } from '../lib/systemActor.js';
 import { Activity } from '../models/activity.model.js';
+import { AiFeedback } from '../models/aiFeedback.model.js';
 import { AiInsight } from '../models/aiInsight.model.js';
+import { AiRun } from '../models/aiRun.model.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
@@ -12,19 +19,26 @@ import { Task } from '../models/task.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction } from './accounts.service.js';
 import { loadLeadForAction } from './opportunities.service.js';
+import { createTask } from './tasks.service.js';
 
 // AI insights about one record: the summary of a company, and the score and next best action
-// of a lead. This file decides WHAT the AI is shown (only records the asking person may see)
-// and keeps the newest answer; the model call itself is an AI task (server/ai/tasks/).
+// of a lead. This file decides WHAT the AI is shown (only records the asking person may see),
+// keeps the newest answer, takes people's opinion of it, and keeps it up to date.
+// The model call itself is an AI task (server/ai/tasks/).
 //
 // An insight is text to read. Nothing here changes a company or a lead, except the lead's two
 // derived fields `aiScore` and `aiRiskLevel`, which are a saved copy of the newest assessment.
+// The one thing a person can turn an insight into is a task, through the normal task service.
 
 const NOT_DELETED = { deletedAt: null };
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HISTORY_ENTRIES = 20;
 const NOTE_CHARACTERS = 400;
 const OPEN_TASK = ['open', 'in_progress'];
+// An insight counts as out of date when the record got news this long after it was written.
+const STALE_AFTER_MS = 60 * 1000;
+// The system does not ask the AI again about the same record more often than this.
+const AUTO_REFRESH_GAP_MS = 20 * 60 * 1000;
 
 const rupees = (paise) => (typeof paise === 'number' ? Math.round(paise / 100) : undefined);
 const day = (value) => (value ? new Date(value).toISOString().slice(0, 10) : undefined);
@@ -123,26 +137,39 @@ function accountFacts(account) {
   });
 }
 
-function toView(insight, names) {
-  if (!insight) return null;
-  return {
-    id: String(insight._id),
-    content: insight.content,
-    model: insight.model ?? null,
-    generatedAt: insight.generatedAt,
-    generatedBy: names.get(String(insight.generatedBy)) ?? null,
-    aiRunId: String(insight.aiRunId),
-  };
-}
-
-async function viewOf(filter) {
+/**
+ * What a screen gets: the insight, whether the record changed since, and my own opinion of it.
+ * @param {object} filter  Finds the one insight
+ * @param {object} actor
+ * @param {unknown} recordChangedAt  The record's "last activity" time
+ */
+async function viewOf(filter, actor, recordChangedAt) {
   const insight = await AiInsight.findOne(filter).lean();
-  const user = insight?.generatedBy
-    ? await User.findById(insight.generatedBy).select('name').lean()
-    : null;
+  if (!insight) return { isAiReady: isAiReady(), insight: null };
+  const [user, feedback] = await Promise.all([
+    insight.generatedBy ? User.findById(insight.generatedBy).select('name').lean() : null,
+    actor._id ? AiFeedback.findOne({ aiRunId: insight.aiRunId, userId: actor._id }).lean() : null,
+  ]);
   return {
     isAiReady: isAiReady(),
-    insight: toView(insight, new Map(user ? [[String(user._id), user.name]] : [])),
+    insight: {
+      id: String(insight._id),
+      content: insight.content,
+      model: insight.model ?? null,
+      generatedAt: insight.generatedAt,
+      // Empty when the system refreshed it by itself.
+      generatedBy: user?.name ?? null,
+      isStale:
+        Boolean(recordChangedAt) &&
+        new Date(recordChangedAt) - new Date(insight.generatedAt) > STALE_AFTER_MS,
+      myFeedback: feedback
+        ? {
+            verdict: feedback.verdict,
+            note: feedback.note ?? null,
+            taskId: feedback.taskId ? String(feedback.taskId) : null,
+          }
+        : null,
+    },
   };
 }
 
@@ -155,12 +182,11 @@ async function keep(filter, result, actor) {
         aiRunId: result.runId,
         model: result.model,
         generatedAt: new Date(),
-        generatedBy: actor._id,
+        generatedBy: actor._id ?? null,
       },
     },
     { upsert: true },
   );
-  return viewOf(filter);
 }
 
 // ── A company's summary ─────────────────────────────────────────────────────────────────────
@@ -171,16 +197,12 @@ async function keep(filter, result, actor) {
  */
 async function visibleLeads(actor, accountId) {
   const ofAccount = { accountId, ...NOT_DELETED };
-  const [total, leads] = await Promise.all([
+  const mine = { $and: [ofAccount, scopeFilter(actor, 'opportunities')] };
+  const [total, seen, leads] = await Promise.all([
     Opportunity.countDocuments(ofAccount),
-    Opportunity.find({ $and: [ofAccount, scopeFilter(actor, 'opportunities')] })
-      .sort({ createdAt: -1 })
-      .limit(15)
-      .lean(),
+    Opportunity.countDocuments(mine),
+    Opportunity.find(mine).sort({ createdAt: -1 }).limit(15).lean(),
   ]);
-  const seen = await Opportunity.countDocuments({
-    $and: [ofAccount, scopeFilter(actor, 'opportunities')],
-  });
   return { leads, audience: seen === total ? 'all' : `user:${actor._id}` };
 }
 
@@ -195,7 +217,7 @@ const accountFilter = (accountId, audience) => ({
 export async function getAccountSummary(actor, accountId) {
   const account = await loadAccountForAction(actor, accountId, 'view');
   const { audience } = await visibleLeads(actor, account._id);
-  return viewOf(accountFilter(account._id, audience));
+  return viewOf(accountFilter(account._id, audience), actor, account.lastActivityAt);
 }
 
 /** Ask the AI for a new summary of a company, from what this person may see of it. */
@@ -224,7 +246,7 @@ export async function refreshAccountSummary(actor, accountId) {
 
   const result = await summarizeAccount({
     accountId: account._id,
-    userId: actor._id,
+    userId: actor._id ?? undefined,
     inputRefs: [
       { kind: 'accounts', id: account._id },
       ...leadIds.map((id) => ({ kind: 'opportunities', id })),
@@ -238,7 +260,9 @@ export async function refreshAccountSummary(actor, accountId) {
       recentHistory: historyOf(activities),
     },
   });
-  return keep(accountFilter(account._id, audience), result, actor);
+  const filter = accountFilter(account._id, audience);
+  await keep(filter, result, actor);
+  return viewOf(filter, actor, account.lastActivityAt);
 }
 
 // ── A lead's score and next best action ─────────────────────────────────────────────────────
@@ -253,7 +277,7 @@ const leadFilter = (leadId) => ({
 /** The saved assessment of a lead, for someone who may see the lead. */
 export async function getLeadAssessment(actor, leadId) {
   const lead = await loadLeadForAction(actor, leadId, 'view');
-  return viewOf(leadFilter(lead._id));
+  return viewOf(leadFilter(lead._id), actor, lead.lastActivityAt);
 }
 
 /** Ask the AI to assess a lead again. */
@@ -278,7 +302,7 @@ export async function refreshLeadAssessment(actor, leadId) {
 
   const result = await assessLead({
     leadId: lead._id,
-    userId: actor._id,
+    userId: actor._id ?? undefined,
     inputRefs: [
       { kind: 'opportunities', id: lead._id },
       ...(account ? [{ kind: 'accounts', id: account._id }] : []),
@@ -298,11 +322,133 @@ export async function refreshLeadAssessment(actor, leadId) {
     },
   });
 
-  // A saved copy on the lead, so lists can show and sort by it without asking the AI again.
+  // A saved copy on the lead, so lists and the board can show it without asking the AI again.
   await Opportunity.updateOne(
     { _id: lead._id },
     { $set: { aiScore: result.output.score, aiRiskLevel: result.output.riskLevel } },
     { timestamps: false },
   );
-  return keep(leadFilter(lead._id), result, actor);
+  const filter = leadFilter(lead._id);
+  await keep(filter, result, actor);
+  return viewOf(filter, actor, lead.lastActivityAt);
+}
+
+// ── What people think of an answer ──────────────────────────────────────────────────────────
+
+/**
+ * One insight, for someone who may read it: they may see its record, and it was written for
+ * them (a company summary built from all leads is only for people who see all those leads).
+ * @returns {Promise<{ insight: object, filter: object, recordChangedAt: unknown }>}
+ */
+async function loadInsightFor(actor, insightId) {
+  const insight = await AiInsight.findById(insightId).lean();
+  if (!insight) throw notFound('This AI answer does not exist any more.');
+  const filter = {
+    kind: insight.kind,
+    entityType: insight.entityType,
+    entityId: insight.entityId,
+    audience: insight.audience,
+  };
+  if (insight.entityType === 'accounts') {
+    const account = await loadAccountForAction(actor, insight.entityId, 'view');
+    const { audience } = await visibleLeads(actor, account._id);
+    if (audience !== insight.audience) throw notFound('This AI answer does not exist any more.');
+    return { insight, filter, recordChangedAt: account.lastActivityAt };
+  }
+  const lead = await loadLeadForAction(actor, insight.entityId, 'view');
+  return { insight, filter, recordChangedAt: lead.lastActivityAt };
+}
+
+async function saveFeedback(actor, insight, fields) {
+  const run = await AiRun.findById(insight.aiRunId).select('task').lean();
+  await AiFeedback.findOneAndUpdate(
+    { aiRunId: insight.aiRunId, userId: actor._id },
+    { $set: { task: run?.task ?? insight.kind, ...fields } },
+    { upsert: true },
+  );
+}
+
+/**
+ * Say what you think of an AI answer: useful, not useful, or what it should have said.
+ * @param {{ verdict: 'accepted' | 'rejected' | 'edited', note?: string }} opinion  Validated
+ */
+export async function giveFeedback(actor, insightId, { verdict, note }) {
+  const { insight, filter, recordChangedAt } = await loadInsightFor(actor, insightId);
+  await saveFeedback(actor, insight, { verdict, note: note || undefined });
+  return viewOf(filter, actor, recordChangedAt);
+}
+
+/**
+ * Turn the next best action of a lead's assessment into a task for me, through the normal
+ * task service (so my permissions and the lead access rule apply). Counts as "useful".
+ */
+export async function acceptNextAction(actor, insightId, context = {}) {
+  const { insight, filter, recordChangedAt } = await loadInsightFor(actor, insightId);
+  const step = insight.content?.nextBestAction;
+  if (insight.kind !== 'lead_assessment' || !step) {
+    throw conflict('This AI answer has no next step to turn into a task.');
+  }
+  if (!can(actor, 'create', { feature: 'tasks' })) {
+    throw forbidden('You do not have permission to add tasks.');
+  }
+  const mine = await AiFeedback.findOne({ aiRunId: insight.aiRunId, userId: actor._id }).lean();
+  if (mine?.taskId) throw conflict('You already made a task from this suggestion.');
+
+  const task = await createTask(
+    actor,
+    {
+      title: step.action.slice(0, 200),
+      description: `Suggested by AI. Why: ${step.reason}`,
+      type: 'follow_up',
+      opportunityId: String(insight.entityId),
+      dueAt: new Date(Date.now() + 2 * DAY_MS),
+    },
+    { requestId: context.requestId, origin: { source: 'ai' } },
+  );
+  await saveFeedback(actor, insight, { verdict: 'accepted', taskId: task.id });
+  await writeAudit({
+    actor,
+    action: 'ai.suggestion_accepted',
+    entityType: 'opportunities',
+    entityId: insight.entityId,
+    newValue: { taskId: task.id, aiRunId: String(insight.aiRunId) },
+    requestId: context.requestId,
+  });
+  return viewOf(filter, actor, recordChangedAt);
+}
+
+// ── Keeping insights up to date by themselves ───────────────────────────────────────────────
+
+/**
+ * The background job after something happened on a record: ask the AI again, as the system.
+ * Only for an insight somebody asked for before, only for an open lead, only when the setting
+ * allows it, and never more often than every 20 minutes for one record. Safe to run twice.
+ * @param {{ kind: 'lead' | 'account', id: string }} target
+ * @returns {Promise<string>} What was done, for the job log
+ */
+export async function autoRefreshInsight({ kind, id }) {
+  if (!isAiReady() || !(await getAiSettings()).autoRefresh) return 'switched off';
+  const filter = kind === 'lead' ? leadFilter(id) : accountFilter(id, 'all');
+  const insight = await AiInsight.findOne(filter).select('generatedAt').lean();
+  if (!insight) return 'nobody asked for this one yet';
+  if (Date.now() - new Date(insight.generatedAt) < AUTO_REFRESH_GAP_MS) return 'fresh enough';
+  try {
+    if (kind === 'lead') {
+      const lead = await Opportunity.findOne({ _id: id, ...NOT_DELETED })
+        .select('status')
+        .lean();
+      if (lead?.status !== 'open') return 'the lead is closed';
+      await refreshLeadAssessment(systemActor(), id);
+    } else {
+      await refreshAccountSummary(systemActor(), id);
+    }
+    return 'refreshed';
+  } catch (error) {
+    // The budget is used up, or the record is gone: not a reason to try again.
+    if (error?.isAppError) {
+      logger.info({ kind, id, reason: error.message }, 'AI insight not refreshed');
+      return 'skipped';
+    }
+    throw error;
+  }
 }
