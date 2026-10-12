@@ -34,6 +34,8 @@ const userGoogleConnectionSchema = new mongoose.Schema(
       historyId: { type: String },
       watchExpiresAt: { type: Date },
       lastSyncAt: { type: Date },
+      // Set while a sync runs, so that two never read the same mailbox at once.
+      syncStartedAt: { type: Date },
     },
     calendar: {
       syncToken: { type: String },

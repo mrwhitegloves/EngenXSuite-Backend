@@ -15,6 +15,7 @@ export const NOTIFICATION_TYPES = {
   lead_assigned: 'A lead is given to me',
   lead_received: 'A new lead comes in for me (Meta ads, website)',
   call_missed: 'I missed a call',
+  email_received: 'A customer writes to me (mail)',
   backup_deleted: 'Old database backups are deleted (for people who manage the settings)',
   ai_budget: 'The AI budget is nearly or fully used (for people who manage the settings)',
 };

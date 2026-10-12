@@ -36,6 +36,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every 3 minutes: read what is new in every connected mailbox.
+    id: 'email-sync-all',
+    queue: 'messaging',
+    cron: '*/3 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailSyncAll,
+    isEnabled: () => true,
+  },
+  {
     // Every morning at 06:30 India time: refresh the AI answers that have grown old.
     id: 'ai-insight-daily',
     queue: 'ai',

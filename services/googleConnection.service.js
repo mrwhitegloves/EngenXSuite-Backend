@@ -6,6 +6,8 @@ import {
   refreshAccessToken,
   revokeToken,
 } from '../integrations/google/oauth.js';
+import { JOB_NAMES } from '../constants/jobNames.js';
+import { enqueue } from '../infra/queues.js';
 import { writeAudit } from '../lib/audit.js';
 import { conflict, createAppError, forbidden } from '../lib/errors.js';
 import { open, seal } from '../lib/secretBox.js';
@@ -126,6 +128,9 @@ export async function completeConnect(actor, grant, context = {}) {
     newValue: { googleEmail: grant.googleEmail },
     requestId: context.requestId,
   });
+  // Read the mailbox for the first time, in the background. Without a queue the person can
+  // press "Read my mailbox now" in the Inbox.
+  await enqueue('messaging', JOB_NAMES.emailSync, { userId: String(actor._id) }).catch(() => {});
 }
 
 /** Take the connection away: Google is told, and our copy of the tokens is deleted. */

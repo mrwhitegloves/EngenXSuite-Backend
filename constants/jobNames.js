@@ -12,4 +12,6 @@ export const JOB_NAMES = {
   taskReminders: 'tasks.reminders',
   insightRefresh: 'ai.insight-refresh',
   insightDaily: 'ai.insight-daily',
+  emailSync: 'email.sync',
+  emailSyncAll: 'email.sync-all',
 };

@@ -1,0 +1,27 @@
+import { JOB_NAMES } from '../constants/jobNames.js';
+import { enqueue } from '../infra/queues.js';
+import { connectedUserIds, syncMailbox } from '../services/emailSync.service.js';
+
+/**
+ * Bring one person's mailbox up to date. Safe to run twice: one run at a time per mailbox, and
+ * a message is stored once.
+ * @param {{ userId: string }} data
+ */
+export async function runEmailSyncJob({ userId }) {
+  return syncMailbox(userId);
+}
+
+/** Every few minutes: one sync job per connected mailbox. */
+export async function runEmailSyncAllJob() {
+  const userIds = await connectedUserIds();
+  const slot = Math.floor(Date.now() / 60_000);
+  for (const userId of userIds) {
+    await enqueue(
+      'messaging',
+      JOB_NAMES.emailSync,
+      { userId },
+      { jobId: `email-sync-${userId}-${slot}` },
+    );
+  }
+  return { mailboxes: userIds.length };
+}
