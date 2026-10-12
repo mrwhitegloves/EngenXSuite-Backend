@@ -45,6 +45,24 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every 5 minutes: take over what changed in every connected Google Calendar.
+    id: 'calendar-sync-all',
+    queue: 'integrations',
+    cron: '*/5 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.calendarSyncAll,
+    isEnabled: () => true,
+  },
+  {
+    // Every minute: reminders for meetings that start within half an hour.
+    id: 'meeting-reminders',
+    queue: 'messaging',
+    cron: '* * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.meetingReminders,
+    isEnabled: () => true,
+  },
+  {
     // Every morning at 06:30 India time: refresh the AI answers that have grown old.
     id: 'ai-insight-daily',
     queue: 'ai',

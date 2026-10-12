@@ -28,6 +28,8 @@ export const SOCKET_EVENTS = {
   callsChanged: 'calls.changed',
   // Customer mail was read from a mailbox, or one was sent.
   emailsChanged: 'emails.changed',
+  // A meeting was planned, changed, closed, or taken over from Google Calendar.
+  meetingsChanged: 'meetings.changed',
   // An inbound lead arrived or was processed, or a lead form or the assignment rule changed.
   inboundLeadsChanged: 'inbound-leads.changed',
   // A tag was added, renamed, merged or deleted.

@@ -14,4 +14,7 @@ export const JOB_NAMES = {
   insightDaily: 'ai.insight-daily',
   emailSync: 'email.sync',
   emailSyncAll: 'email.sync-all',
+  calendarSync: 'calendar.sync',
+  calendarSyncAll: 'calendar.sync-all',
+  meetingReminders: 'meetings.reminders',
 };
