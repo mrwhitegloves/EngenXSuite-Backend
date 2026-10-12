@@ -149,6 +149,8 @@ function readParts(payload) {
         filename: part.filename.slice(0, 200),
         mimeType: part.mimeType ?? '',
         size: Number(part.body?.size ?? 0),
+        // Gmail's handle for fetching the file itself (getAttachment).
+        attachmentId: part.body?.attachmentId ?? null,
       });
     } else if (part.mimeType === 'text/plain' && part.body?.data) {
       plain += decode(part.body.data);
@@ -188,16 +190,52 @@ export async function getMessage(token, id) {
   };
 }
 
+/** The bytes of one attachment of a message. */
+export async function getAttachment(token, messageId, attachmentId) {
+  const part = await call(token, `/messages/${messageId}/attachments/${attachmentId}`);
+  return Buffer.from(String(part.data ?? ''), 'base64url');
+}
+
+const wrap76 = (base64) => base64.replace(/(.{76})/g, '$1\r\n');
+
 const encodeWord = (text) =>
   /^[\x20-\x7e]*$/.test(text)
     ? text
     : `=?UTF-8?B?${Buffer.from(text, 'utf8').toString('base64')}?=`;
 
+/** The text of a mail alone; or, with files, the text and each file as parts of one message. */
+function bodyLines(mail) {
+  const textPart = [
+    'Content-Type: text/plain; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    wrap76(Buffer.from(mail.text, 'utf8').toString('base64')),
+  ];
+  if (!mail.attachments?.length) return textPart;
+  const boundary = `crm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return [
+    `Content-Type: multipart/mixed; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    ...textPart,
+    ...mail.attachments.flatMap((file) => [
+      `--${boundary}`,
+      `Content-Type: ${file.mimeType || 'application/octet-stream'}; name="${encodeWord(file.filename)}"`,
+      `Content-Disposition: attachment; filename="${encodeWord(file.filename)}"`,
+      'Content-Transfer-Encoding: base64',
+      '',
+      wrap76(file.content.toString('base64')),
+    ]),
+    `--${boundary}--`,
+  ];
+}
+
 /**
- * Send a plain-text message from the person's own mailbox. With `threadId` (and the id header
- * of the message it answers) it lands in that conversation.
+ * Send a message from the person's own mailbox. With `threadId` (and the id header of the
+ * message it answers) it lands in that conversation.
  * @param {{ from: string, to: string[], cc?: string[], subject: string, text: string,
- *           threadId?: string, inReplyTo?: string, references?: string }} mail
+ *           threadId?: string, inReplyTo?: string, references?: string,
+ *           attachments?: { filename: string, mimeType: string, content: Buffer }[] }} mail
  * @returns {Promise<{ id: string, threadId: string }>}
  */
 export async function sendMessage(token, mail) {
@@ -211,12 +249,7 @@ export async function sendMessage(token, mail) {
       ? `References: ${[mail.references, mail.inReplyTo].filter(Boolean).join(' ')}`
       : null,
     'MIME-Version: 1.0',
-    'Content-Type: text/plain; charset=UTF-8',
-    'Content-Transfer-Encoding: base64',
-    '',
-    Buffer.from(mail.text, 'utf8')
-      .toString('base64')
-      .replace(/(.{76})/g, '$1\r\n'),
+    ...bodyLines(mail),
   ].filter((line) => line !== null);
   const sent = await call(token, '/messages/send', {
     method: 'POST',

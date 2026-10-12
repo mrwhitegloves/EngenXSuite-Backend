@@ -1,10 +1,11 @@
-import { draftReply } from '../ai/tasks/emailTasks.js';
+import { draftReply, writeEmail } from '../ai/tasks/emailTasks.js';
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { sendMessage } from '../integrations/google/gmail.js';
 import { logger } from '../infra/logger.js';
 import { enqueue } from '../infra/queues.js';
 import { writeAudit } from '../lib/audit.js';
 import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
+import { keyFromUrl, readObject } from '../infra/storage.js';
 import { runListQuery } from '../lib/queryBuilder.js';
 import { scopeFilter } from '../lib/scopeFilter.js';
 import { Account } from '../models/account.model.js';
@@ -14,6 +15,13 @@ import { Opportunity } from '../models/opportunity.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
 import { User } from '../models/user.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
+import { loadAccountForAction } from './accounts.service.js';
+import {
+  MAX_SEND_BYTES,
+  attachmentViews,
+  keepUploadedFile,
+  uploadPrefixOf,
+} from './emailFiles.service.js';
 import { classifyThread, keepMessage, syncMailbox } from './emailSync.service.js';
 import { getGoogleAccessToken } from './googleConnection.service.js';
 
@@ -118,6 +126,7 @@ export async function listThreads(actor, query) {
       query.view === 'mine' ? { userId: actor._id } : {},
       query.accountId ? { accountId: query.accountId } : {},
       query.opportunityId ? { opportunityId: query.opportunityId } : {},
+      query.contactId ? { contactId: query.contactId } : {},
       escaped
         ? {
             $or: [
@@ -145,9 +154,10 @@ export async function getThread(actor, threadId) {
     namesOf([thread]),
     Email.find({ threadId: thread._id }).sort({ sentAt: 1 }).lean(),
   ]);
+  const files = await Promise.all(emails.map((email) => attachmentViews(email.attachments)));
   return {
     ...toThreadView(thread, names, actor),
-    messages: emails.map((email) => ({
+    messages: emails.map((email, index) => ({
       id: String(email._id),
       direction: email.direction,
       from: email.from,
@@ -156,9 +166,81 @@ export async function getThread(actor, threadId) {
       cc: email.cc,
       sentAt: email.sentAt,
       text: email.text ?? '',
-      attachments: email.attachments,
+      // Each with a link that opens for an hour.
+      attachments: files[index],
     })),
   };
+}
+
+/** Keep a file I picked from my device, to send with my next mail. */
+export function uploadAttachment(actor, file) {
+  return keepUploadedFile(actor, file);
+}
+
+/**
+ * The files that came or went with the mail of one company, newest first: to look at, and to
+ * pick from when writing a mail.
+ */
+export async function listAccountFiles(actor, accountId) {
+  const account = await loadAccountForAction(actor, accountId, 'view');
+  const threads = await EmailThread.find({ $and: [{ accountId: account._id }, visibleTo(actor)] })
+    .select('_id subject')
+    .lean();
+  const subjects = new Map(threads.map((thread) => [String(thread._id), thread.subject]));
+  const emails = await Email.find({
+    threadId: { $in: threads.map((thread) => thread._id) },
+    'attachments.url': { $exists: true },
+  })
+    .sort({ sentAt: -1 })
+    .limit(100)
+    .lean();
+  const rows = [];
+  for (const email of emails) {
+    for (const file of await attachmentViews(email.attachments)) {
+      if (!file.link) continue;
+      rows.push({
+        ...file,
+        direction: email.direction,
+        sentAt: email.sentAt,
+        subject: subjects.get(String(email.threadId)) ?? '',
+      });
+    }
+  }
+  return rows;
+}
+
+/**
+ * The files to send, as bytes. A file may be one I just picked from my device, or one that is
+ * on a mail of a conversation I may see. Anything else is refused.
+ * @param {{ url: string, filename?: string, mimeType?: string }[]} refs
+ */
+async function readAttachments(actor, refs = []) {
+  const files = [];
+  let total = 0;
+  for (const ref of refs) {
+    const key = keyFromUrl(ref.url);
+    let meta = null;
+    if (key?.startsWith(uploadPrefixOf(actor._id))) {
+      meta = { filename: ref.filename ?? key.split('/').pop(), mimeType: ref.mimeType };
+    } else if (key) {
+      const email = await Email.findOne({ 'attachments.url': ref.url }).lean();
+      const isVisible =
+        email && (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleTo(actor)] }));
+      if (isVisible) meta = email.attachments.find((file) => file.url === ref.url);
+    }
+    const content = meta ? await readObject(key) : null;
+    if (!content) throw badRequest('One of the files could not be found. Attach it again.');
+    total += content.length;
+    if (total > MAX_SEND_BYTES) {
+      throw badRequest('The files together are too large for one mail (about 17 MB).');
+    }
+    files.push({
+      filename: String(meta.filename).slice(0, 200),
+      mimeType: meta.mimeType || 'application/octet-stream',
+      content,
+    });
+  }
+  return files;
 }
 
 /** What the Inbox needs to know about me: is my mailbox connected, when was it last read. */
@@ -198,7 +280,8 @@ export async function requestSync(actor) {
 
 /**
  * Send a mail from my own mailbox: an answer inside a conversation, or a new mail.
- * @param {{ threadId?: string, to?: string[], cc?: string[], subject?: string, text: string }} mail
+ * @param {{ threadId?: string, to?: string[], cc?: string[], subject?: string, text: string,
+ *           attachments?: { url: string, filename?: string, mimeType?: string }[] }} mail
  *        Validated. With threadId the recipients and the subject come from the conversation
  *        unless given.
  */
@@ -237,8 +320,10 @@ export async function sendEmail(actor, mail, context = {}) {
     mail.subject?.trim() || (thread ? (/^re:/i.test(base) ? base : `Re: ${base}`) : '');
   if (!subject) throw badRequest('Write a subject.', [{ field: 'subject' }]);
 
+  const attachments = await readAttachments(actor, mail.attachments);
   const token = await getGoogleAccessToken(actor._id);
   const sent = await sendMessage(token, {
+    attachments,
     from: own,
     to,
     cc: mail.cc,
@@ -258,7 +343,7 @@ export async function sendEmail(actor, mail, context = {}) {
     action: 'email.sent',
     entityType: 'email_threads',
     entityId: kept.threadId ?? thread?._id,
-    newValue: { to, subject },
+    newValue: { to, subject, files: attachments.map((file) => file.filename) },
     requestId: context.requestId,
   });
   return {
@@ -319,4 +404,91 @@ export async function draftAnswer(actor, threadId, { instruction } = {}) {
     })),
   });
   return { body: output.body };
+}
+
+/**
+ * Let the AI write a mail, or change the one on the screen. Nothing is sent or saved: the
+ * person reads it, asks for changes as often as they like, and sends it themselves.
+ *
+ *   mode "reply"     : an answer to the newest customer message of a conversation
+ *   mode "follow_up" : the next mail in a conversation, from everything said in it so far
+ *   mode "new"       : a first mail to a person of a company
+ *
+ * @param {{ mode: 'reply' | 'follow_up' | 'new', threadId?: string, accountId?: string,
+ *           contactId?: string, instruction?: string,
+ *           draft?: { subject?: string, body: string } }} request  Validated
+ *        draft: the mail as it is now; with it, the instruction says what to change
+ * @returns {Promise<{ subject: string, body: string }>}
+ */
+export async function writeWithAi(actor, request) {
+  let thread = null;
+  let emails = [];
+  let accountId = request.accountId;
+  let contactId = request.contactId;
+  let leadId = null;
+  if (request.threadId) {
+    thread = await loadThread(actor, request.threadId);
+    if (!sameId(thread.userId, actor._id)) {
+      throw forbidden('You can write only in conversations of your own mailbox.');
+    }
+    emails = await Email.find({ threadId: thread._id }).sort({ sentAt: -1 }).limit(12).lean();
+    accountId = thread.accountId;
+    contactId = thread.contactId;
+    leadId = thread.opportunityId;
+    if (request.mode === 'reply' && !emails.some((email) => email.direction === 'inbound')) {
+      throw conflict('There is no customer message to answer in this conversation.');
+    }
+  } else if (accountId) {
+    await loadAccountForAction(actor, accountId, 'view');
+  } else {
+    throw badRequest('Say which conversation or which company the mail is for.');
+  }
+
+  const [contact, account, lead, earlier] = await Promise.all([
+    contactId
+      ? Contact.findOne({ _id: contactId, accountId }).select('name designation').lean()
+      : null,
+    accountId ? Account.findById(accountId).select('name industry').lean() : null,
+    leadId ? Opportunity.findById(leadId).select('name requirement stageId').lean() : null,
+    // For a new mail: what was talked about before with this company (subjects only).
+    !thread && accountId
+      ? EmailThread.find({ $and: [{ accountId }, visibleTo(actor)] })
+          .select('subject lastMessageAt')
+          .sort({ lastMessageAt: -1 })
+          .limit(5)
+          .lean()
+      : [],
+  ]);
+  const stage = lead ? await PipelineStage.findById(lead.stageId).select('name').lean() : null;
+  const { output } = await writeEmail({
+    mode: thread ? request.mode : 'new',
+    threadId: thread?._id,
+    accountId,
+    userId: actor._id,
+    sender: actor.name,
+    instruction: request.instruction,
+    draft: request.draft,
+    subject: thread?.subject,
+    customer: {
+      person: contact ? [contact.name, contact.designation].filter(Boolean).join(', ') : undefined,
+      company: account?.name,
+      industry: account?.industry,
+      lead: lead
+        ? { about: lead.name, requirement: lead.requirement, stage: stage?.name }
+        : undefined,
+      earlierConversations: earlier.length
+        ? earlier.map(
+            (item) => `${item.subject} (${item.lastMessageAt.toISOString().slice(0, 10)})`,
+          )
+        : undefined,
+    },
+    messages: emails.reverse().map((email) => ({
+      direction: email.direction,
+      from: email.fromName ?? email.from,
+      date: email.sentAt.toISOString().slice(0, 10),
+      text: (email.text || email.snippet || '').slice(0, 3000),
+      files: email.attachments?.length ? email.attachments.map((file) => file.filename) : undefined,
+    })),
+  });
+  return { subject: output.subject, body: output.body };
 }

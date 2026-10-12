@@ -15,6 +15,7 @@ import { Email, EmailThread } from '../models/email.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { recordActivity } from './activities.service.js';
+import { storeMessageAttachments } from './emailFiles.service.js';
 import { getGoogleAccessToken } from './googleConnection.service.js';
 import { notify } from './notifications.service.js';
 
@@ -201,6 +202,11 @@ export async function keepMessage(token, mailbox, messageId, options = {}) {
     { _id: saved._id },
     { $addToSet: { participants: { $each: others } } },
   );
+  // The files of the mail are copied into our own storage; the mail keeps their addresses.
+  if (message.attachments.length > 0) {
+    const files = await storeMessageAttachments(token, email._id, message.id, message.attachments);
+    await Email.updateOne({ _id: email._id }, { $set: { attachments: files } });
+  }
   await refreshThread(saved._id);
 
   // On the timeline of the company, the person and the lead.

@@ -4,9 +4,12 @@ import {
   draftAnswer,
   getMailboxStatus,
   getThread,
+  listAccountFiles,
   listThreads,
   requestSync,
   sendEmail,
+  uploadAttachment,
+  writeWithAi,
 } from '../services/emails.service.js';
 
 // Customer mail. Each function: read the validated request, call one service function, respond.
@@ -46,4 +49,19 @@ export async function postClassify(req, res) {
 export async function postDraft(req, res) {
   const { params, body } = req.validated;
   sendOk(res, await draftAnswer(req.user, params.id, body));
+}
+
+// POST /api/emails/attachments: keep a file I picked, to send with my next mail.
+export async function postAttachment(req, res) {
+  sendOk(res, await uploadAttachment(req.user, req.file));
+}
+
+// GET /api/emails/files?accountId=…: the files of one company's mail.
+export async function getFiles(req, res) {
+  sendOk(res, await listAccountFiles(req.user, req.validated.query.accountId));
+}
+
+// POST /api/emails/write: the AI writes a mail, or changes the one on the screen. Sends nothing.
+export async function postWrite(req, res) {
+  sendOk(res, await writeWithAi(req.user, req.validated.body));
 }

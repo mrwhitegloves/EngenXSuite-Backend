@@ -1,19 +1,30 @@
 import { Router } from 'express';
 import {
+  getFiles,
   getMailbox,
   getThreadById,
   getThreads,
+  postAttachment,
   postClassify,
   postDraft,
   postSend,
   postSync,
+  postWrite,
 } from '../controllers/emails.controller.js';
 import { authorize } from '../middleware/authorize.js';
 import { createAiLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
-import { draftBody, listThreadsQuery, sendEmailBody } from '../validation/emails.js';
+import { singleFileUpload } from '../middleware/upload.js';
+import { MAX_UPLOAD_BYTES } from '../services/emailFiles.service.js';
+import {
+  accountFilesQuery,
+  draftBody,
+  listThreadsQuery,
+  sendEmailBody,
+  writeWithAiBody,
+} from '../validation/emails.js';
 
 // Customer mail (/api/emails). authorize() answers "may this person use mail at all"; which
 // conversation exactly is decided in the service (one's own mailbox; linked ones for the
@@ -34,6 +45,20 @@ router.get(
 );
 router.get('/threads/:id', authorize(FEATURE, 'view'), byId, getThreadById);
 router.post('/send', authorize(FEATURE, 'create'), validate({ body: sendEmailBody }), postSend);
+router.post(
+  '/attachments',
+  authorize(FEATURE, 'create'),
+  singleFileUpload({ maxBytes: MAX_UPLOAD_BYTES }),
+  postAttachment,
+);
+router.get('/files', authorize(FEATURE, 'view'), validate({ query: accountFilesQuery }), getFiles);
+router.post(
+  '/write',
+  authorize(FEATURE, 'create'),
+  aiLimiter,
+  validate({ body: writeWithAiBody }),
+  postWrite,
+);
 router.post('/threads/:id/classify', authorize(FEATURE, 'view'), aiLimiter, byId, postClassify);
 router.post(
   '/threads/:id/draft',

@@ -104,3 +104,77 @@ export function draftReply({ messages, sender, customer, instruction, threadId, 
     maxTokens: 3000,
   });
 }
+
+export const WRITE_EMAIL_VERSION = 'writeEmail/v1';
+
+export const writtenEmailSchema = z.object({
+  // For a new mail: its subject. Inside a conversation: the conversation's subject, unchanged.
+  subject: z.string().trim().max(300),
+  // The whole text, ready to be read and changed: greeting, body, closing.
+  body: z.string().trim().min(1).max(8000),
+});
+
+const WRITE_SYSTEM = `You write business email for a sales person of a company that sells industrial AI, digital transformation and engineering solutions to factories in India.
+You get JSON with:
+- "mode": "reply" (answer the newest customer message of the conversation), "follow_up" (write the next mail in the conversation from everything said in it so far, for example a reminder or the next step), or "new" (a first mail on a new subject).
+- "conversation": the mails so far, oldest first ("inbound" = the customer wrote, "outbound" = we wrote); empty for a new mail.
+- "sender": who the mail is from. "customer": what the CRM knows about them.
+- "instruction": what the sender wants from this mail (may be missing).
+- "currentDraft": the mail as it stands now (may be missing).
+
+How to work:
+- When "currentDraft" is given, the instruction says what to CHANGE. Change exactly that and keep everything else as it is, word for word.
+- When there is no draft, write the mail for the mode, following the instruction.
+
+Rules:
+- Use only what is in the conversation and the CRM facts. Never invent a fact, a number, a date, a price, a delivery time, a feature or a promise. Where the mail needs something you do not know, write it in square brackets for the sender to fill in, for example [price] or [date].
+- Never state a price or a discount, and never commit to a date, unless it is in the conversation already.
+- Plain, simple, correct, polite business English. Short paragraphs. No filler, no flattery. Write in English also when the customer wrote in Hindi or Hinglish, unless the instruction asks for another language.
+- Start with a greeting to the customer by name when it is known. End with a closing and the sender's name.
+- Plain text only: no Markdown.
+- "subject": for "new", a short, plain subject. For "reply" and "follow_up", give back the conversation's subject unchanged.
+
+Answer with one JSON object and nothing else:
+{ "subject": "the subject", "body": "the whole text of the mail" }`;
+
+/**
+ * @param {{ mode: string, messages: object[], sender: string, customer: object, subject?: string,
+ *           instruction?: string, draft?: { subject?: string, body: string }, threadId?: unknown,
+ *           accountId?: unknown, userId: unknown }} input
+ */
+export function writeEmail({
+  mode,
+  messages,
+  sender,
+  customer,
+  subject,
+  instruction,
+  draft,
+  threadId,
+  accountId,
+  userId,
+}) {
+  return runAiTask({
+    task: 'writeEmail',
+    promptVersion: WRITE_EMAIL_VERSION,
+    modelClass: 'balanced',
+    system: WRITE_SYSTEM,
+    user: JSON.stringify({
+      mode,
+      ...(subject ? { conversationSubject: subject } : {}),
+      conversation: messages,
+      sender,
+      customer,
+      ...(instruction ? { instruction } : {}),
+      ...(draft ? { currentDraft: draft } : {}),
+    }),
+    schema: writtenEmailSchema,
+    inputRefs: [
+      threadId ? { kind: 'email_threads', id: threadId } : { kind: 'accounts', id: accountId },
+    ],
+    userId,
+    entityType: threadId ? 'email_threads' : 'accounts',
+    entityId: threadId ?? accountId,
+    maxTokens: 3500,
+  });
+}
