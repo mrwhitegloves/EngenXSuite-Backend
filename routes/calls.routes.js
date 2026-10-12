@@ -12,7 +12,9 @@ import {
   respondInbound,
   respondNothing,
 } from '../controllers/calls.controller.js';
+import { getCallTranscript, postCallTranscript } from '../controllers/aiChat.controller.js';
 import { createWebhookHandler } from '../controllers/webhooks/receive.js';
+import { createAiLimiter } from '../middleware/rateLimit.js';
 import { isValidPlivoSignature } from '../integrations/plivo/client.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
@@ -75,6 +77,21 @@ callsRouter.get(
   authorize(FEATURE, 'view'),
   validate({ params: idParams }),
   getRecording,
+);
+
+// The text of a call, made from its recording when a person asks for it.
+callsRouter.get(
+  '/:id/transcript',
+  authorize(FEATURE, 'view'),
+  validate({ params: idParams }),
+  getCallTranscript,
+);
+callsRouter.post(
+  '/:id/transcript',
+  authorize(FEATURE, 'view'),
+  createAiLimiter(),
+  validate({ params: idParams }),
+  postCallTranscript,
 );
 
 // ── Settings → Calls.

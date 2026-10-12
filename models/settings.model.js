@@ -50,6 +50,8 @@ const settingsSchema = new mongoose.Schema(
       alertPercent: { type: Number, min: 1, max: 99 },
       // Refresh an insight by itself after something happened on its record.
       autoRefresh: { type: Boolean },
+      // The audio-to-text model (an id from ai/config.js).
+      transcribeModel: { type: String },
       // Per class of work (fast, balanced, strong): { model, fallback }, ids from ai/config.js.
       models: { type: mongoose.Schema.Types.Mixed },
     },

@@ -97,6 +97,39 @@ export const AI_MODEL_CLASSES = {
 export const AI_MODEL_CLASS_KEYS = Object.keys(AI_MODEL_CLASSES);
 
 export const AI_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export const AI_TRANSCRIBE_URL = 'https://openrouter.ai/api/v1/audio/transcriptions';
+
+/**
+ * Audio-to-text models (founder decision 2026-10-12: only models offered through OpenRouter).
+ * Read from /api/v1/models?output_modalities=transcription on 2026-10-12. The cost of a run
+ * comes back with its answer. Which one hears Hinglish phone audio best has to be tried on
+ * real calls; the choice is a setting (Settings → AI). All three answered a test request on
+ * 2026-10-12 (about 0.27, 0.18 and 0.11 dollars per hour of audio). Voxtral Mini was left out:
+ * it wrote a sentence for a recording that held only a tone.
+ */
+export const AI_TRANSCRIBE_CHOICES = [
+  { id: 'openai/gpt-transcribe', provider: 'OpenAI', label: 'GPT Transcribe' },
+  { id: 'google/gemini-3.5-transcribe', provider: 'Google', label: 'Gemini 3.5 Transcribe' },
+  { id: 'elevenlabs/scribe-v2', provider: 'ElevenLabs', label: 'Scribe v2' },
+];
+export const AI_DEFAULT_TRANSCRIBE_MODEL = 'openai/gpt-transcribe';
+// One upload to the provider may be 25 MB; a longer recording is sent in pieces of this size.
+export const AI_AUDIO_MAX_BYTES = 25 * 1024 * 1024;
+export const AI_AUDIO_PIECE_BYTES = 12 * 1024 * 1024;
+// The provider gives a transcription 60 seconds; we wait a little longer for the answer.
+export const AI_TRANSCRIBE_TIMEOUT_MS = 90_000;
+
+// The AI chat: how much of a conversation is sent along, and how long things may be.
+export const AI_CHAT = {
+  maxMessages: 40,
+  maxMessageCharacters: 60_000,
+  maxPromptCharacters: 150_000,
+  maxInstructionCharacters: 1000,
+  maxContextRecords: 5,
+  // What is kept of a file, a transcript or a record that is put into a chat.
+  maxAttachmentCharacters: 40_000,
+  maxFileBytes: 10 * 1024 * 1024,
+};
 // One model call may take this long before it counts as failed.
 export const AI_TIMEOUT_MS = 60_000;
 // The longest answer a task may ask for, unless it says otherwise. Generous on purpose: an

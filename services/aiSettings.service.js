@@ -3,6 +3,7 @@ import {
   AI_MODEL_CHOICES,
   AI_MODEL_CLASSES,
   AI_MODEL_CLASS_KEYS,
+  AI_TRANSCRIBE_CHOICES,
   AI_USD_TO_INR,
 } from '../ai/config.js';
 import { getAiSettings, isAiReady } from '../ai/settings.js';
@@ -37,6 +38,12 @@ export async function getAiSettingsView(now = new Date()) {
     dailyRunsPerUser: settings.dailyRunsPerUser,
     alertPercent: settings.alertPercent,
     autoRefresh: settings.autoRefresh,
+    transcribeModel: settings.transcribeModel,
+    transcribeChoices: AI_TRANSCRIBE_CHOICES.map(({ id, provider, label }) => ({
+      id,
+      provider,
+      label,
+    })),
     // One line per class of work: what it is for, and the two models chosen for it.
     classes: AI_MODEL_CLASS_KEYS.map((key) => ({
       key,

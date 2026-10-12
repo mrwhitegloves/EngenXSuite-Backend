@@ -223,10 +223,13 @@ export async function getAccountSummary(actor, accountId) {
   return viewOf(accountFilter(account._id, audience), actor, account.lastActivityAt);
 }
 
-/** Ask the AI for a new summary of a company, from what this person may see of it. */
-export async function refreshAccountSummary(actor, accountId) {
-  const account = await loadAccountForAction(actor, accountId, 'view');
-  const now = new Date();
+/**
+ * What the AI is shown about a company: its own facts, its people, and of its leads, tasks
+ * and history only what this person may see. Used by the summary and by the AI chat.
+ * @param {object} account  Already loaded with the person's access check
+ * @returns {Promise<{ context: object, leadIds: unknown[], audience: string }>}
+ */
+export async function accountContextFor(actor, account, now = new Date()) {
   const { leads, audience } = await visibleLeads(actor, account._id);
   const leadIds = leads.map((lead) => lead._id);
   // History and tasks of the company itself, and of the leads this person may see.
@@ -246,14 +249,9 @@ export async function refreshAccountSummary(actor, accountId) {
       .lean(),
     stageNames(leads),
   ]);
-
-  const result = await summarizeAccount({
-    accountId: account._id,
-    userId: actor._id ?? undefined,
-    inputRefs: [
-      { kind: 'accounts', id: account._id },
-      ...leadIds.map((id) => ({ kind: 'opportunities', id })),
-    ],
+  return {
+    leadIds,
+    audience,
     context: {
       today: day(now),
       company: accountFacts(account),
@@ -262,11 +260,33 @@ export async function refreshAccountSummary(actor, accountId) {
       openTasks: tasksOf(tasks, now),
       recentHistory: historyOf(activities),
     },
+  };
+}
+
+/** Ask the AI for a new summary of a company, from what this person may see of it. */
+export async function refreshAccountSummary(actor, accountId) {
+  const account = await loadAccountForAction(actor, accountId, 'view');
+  const { context, leadIds, audience } = await accountContextFor(actor, account);
+  const result = await summarizeAccount({
+    accountId: account._id,
+    userId: actor._id ?? undefined,
+    inputRefs: [
+      { kind: 'accounts', id: account._id },
+      ...leadIds.map((id) => ({ kind: 'opportunities', id })),
+    ],
+    context,
   });
   const filter = accountFilter(account._id, audience);
   await keep(filter, result, actor);
   return viewOf(filter, actor, account.lastActivityAt);
 }
+
+/** What the AI is shown about one person of a company (no phone number, no email). */
+export const contactContextFor = (contact, account, now = new Date()) => ({
+  today: day(now),
+  person: personFacts(contact, now),
+  company: account ? accountFacts(account) : undefined,
+});
 
 // ── A lead's score and next best action ─────────────────────────────────────────────────────
 
@@ -283,10 +303,13 @@ export async function getLeadAssessment(actor, leadId) {
   return viewOf(leadFilter(lead._id), actor, lead.lastActivityAt);
 }
 
-/** Ask the AI to assess a lead again. */
-export async function refreshLeadAssessment(actor, leadId) {
-  const lead = await loadLeadForAction(actor, leadId, 'view');
-  const now = new Date();
+/**
+ * What the AI is shown about a lead: the lead, its company, its people, its tasks and its
+ * history. Used by the assessment and by the AI chat.
+ * @param {object} lead  Already loaded with the person's access check
+ * @returns {Promise<{ context: object, accountId: unknown }>}
+ */
+export async function leadContextFor(lead, now = new Date()) {
   const contactIds = [
     lead.primaryContactId,
     ...(lead.stakeholders ?? []).map((item) => item.contactId),
@@ -302,14 +325,8 @@ export async function refreshLeadAssessment(actor, leadId) {
     stageNames([lead]),
   ]);
   const main = contacts.find((contact) => String(contact._id) === String(lead.primaryContactId));
-
-  const result = await assessLead({
-    leadId: lead._id,
-    userId: actor._id ?? undefined,
-    inputRefs: [
-      { kind: 'opportunities', id: lead._id },
-      ...(account ? [{ kind: 'accounts', id: account._id }] : []),
-    ],
+  return {
+    accountId: account?._id,
     context: {
       today: day(now),
       lead: leadFacts(lead, stages, now),
@@ -323,6 +340,21 @@ export async function refreshLeadAssessment(actor, leadId) {
       tasksDone: tasks.filter((task) => task.status === 'done').length,
       history: historyOf(activities),
     },
+  };
+}
+
+/** Ask the AI to assess a lead again. */
+export async function refreshLeadAssessment(actor, leadId) {
+  const lead = await loadLeadForAction(actor, leadId, 'view');
+  const { context, accountId } = await leadContextFor(lead);
+  const result = await assessLead({
+    leadId: lead._id,
+    userId: actor._id ?? undefined,
+    inputRefs: [
+      { kind: 'opportunities', id: lead._id },
+      ...(accountId ? [{ kind: 'accounts', id: accountId }] : []),
+    ],
+    context,
   });
 
   // A saved copy on the lead, so lists and the board can show it without asking the AI again.

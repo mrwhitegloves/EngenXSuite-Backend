@@ -20,6 +20,7 @@ import { notesRouter, tasksRouter, timelineRouter } from './activities.routes.js
 import notificationsRoutes from './notifications.routes.js';
 import { dashboardRouter, searchRouter } from './search.routes.js';
 import { callSettingsRouter, callsRouter, plivoWebhooksRouter } from './calls.routes.js';
+import { aiChatRouter } from './aiChat.routes.js';
 import { aiSettingsRouter, insightsRouter } from './insights.routes.js';
 import {
   inboundLeadsRouter,
@@ -65,6 +66,7 @@ router.use('/webhooks/plivo', plivoWebhooksRouter);
 router.use('/webhooks', webhooksRouter);
 router.use('/calls', callsRouter);
 router.use('/insights', insightsRouter);
+router.use('/ai', aiChatRouter);
 router.use('/lead-forms', leadFormsRouter);
 router.use('/inbound-leads', inboundLeadsRouter);
 

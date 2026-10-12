@@ -22,6 +22,7 @@ import { scopeFilter } from '../lib/scopeFilter.js';
 import { systemActor } from '../lib/systemActor.js';
 import { Account } from '../models/account.model.js';
 import { Call } from '../models/call.model.js';
+import { CallTranscript } from '../models/callTranscript.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { Settings } from '../models/settings.model.js';
@@ -153,14 +154,18 @@ async function toViews(calls, actor) {
         .map(String),
     ),
   ];
-  const [users, contacts] = await Promise.all([
+  const [users, contacts, transcripts] = await Promise.all([
     User.find({ _id: { $in: [...ids('userId'), ...ids('answeredByUserId')] } })
       .select('name')
       .lean(),
     Contact.find({ _id: { $in: ids('contactId') } })
       .select('name')
       .lean(),
+    CallTranscript.find({ callId: { $in: calls.map((call) => call._id) } })
+      .select('callId')
+      .lean(),
   ]);
+  const withText = new Set(transcripts.map((item) => String(item.callId)));
   const named = (list, id) => {
     const item = id && list.find((entry) => String(entry._id) === String(id));
     return item ? { id: String(item._id), name: item.name } : null;
@@ -188,6 +193,8 @@ async function toViews(calls, actor) {
       contact: named(contacts, call.contactId),
       opportunityId: call.opportunityId ? String(call.opportunityId) : null,
       hasRecording: Boolean(call.recordingUrl),
+      // The text of the call exists (made from the recording by a person's request).
+      hasTranscript: withText.has(String(call._id)),
       permissions: {
         // The recording and the outcome follow the "calls" permission (own, team, all).
         canPlayRecording: Boolean(call.recordingUrl) && can(actor, 'view', record),
@@ -309,7 +316,7 @@ export async function listCalls(actor, query) {
 }
 
 /** One call for an action, by the "calls" permission; anything else is "not found". */
-async function loadCallForAction(actor, callId, action) {
+export async function loadCallForAction(actor, callId, action) {
   const call = await Call.findById(callId).lean();
   const record = { feature: FEATURE, record: call, ...OWNERSHIP };
   if (!call || !can(actor, 'view', record)) throw notFound('Call not found');

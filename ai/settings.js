@@ -4,6 +4,8 @@ import {
   AI_DEFAULT_ALERT_PERCENT,
   AI_DEFAULT_DAILY_RUNS_PER_USER,
   AI_DEFAULT_MONTHLY_CAP_PAISE,
+  AI_DEFAULT_TRANSCRIBE_MODEL,
+  AI_TRANSCRIBE_CHOICES,
   AI_MODEL_CHOICES,
   AI_MODEL_CLASSES,
   AI_MODEL_CLASS_KEYS,
@@ -45,6 +47,10 @@ export async function getAiSettings() {
     alertPercent: saved.alertPercent ?? AI_DEFAULT_ALERT_PERCENT,
     // Ask the AI again by itself when something happens on a record that has an insight.
     autoRefresh: saved.autoRefresh ?? true,
+    // The audio-to-text model, from the list in config.js.
+    transcribeModel: AI_TRANSCRIBE_CHOICES.some((choice) => choice.id === saved.transcribeModel)
+      ? saved.transcribeModel
+      : AI_DEFAULT_TRANSCRIBE_MODEL,
     models,
   };
 }
