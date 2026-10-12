@@ -35,6 +35,20 @@ const envSchema = z.object({
   // Only accounts on this domain may connect Gmail and Calendar (phase 06).
   WORKSPACE_DOMAIN: z.string().min(1).default('engenx.in'),
 
+  // Gmail and Calendar of the team (docs/EMAIL.md): the OAuth client of an INTERNAL Google Cloud
+  // project of the company's Workspace. Not the sign-in client above. Optional: without them
+  // nobody can connect a mailbox.
+  GOOGLE_WORKSPACE_CLIENT_ID: z.string().min(1).optional(),
+  GOOGLE_WORKSPACE_CLIENT_SECRET: z.string().min(1).optional(),
+  // Seals secrets that are kept in the database and used again (people's Google tokens):
+  // 32 random bytes as base64, made with
+  //   node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+  // Never change it once mailboxes are connected: they would all have to connect again.
+  ENCRYPTION_KEY: z
+    .string()
+    .refine((value) => Buffer.from(value, 'base64').length === 32, 'must be 32 bytes as base64')
+    .optional(),
+
   // File storage (AWS S3). Optional as a group: without them uploads are switched off.
   AWS_S3_IAM_ACCESS_KEY_ID: z.string().min(1).optional(),
   AWS_S3_IAM_SECRET_ACCESS_KEY: z.string().min(1).optional(),
