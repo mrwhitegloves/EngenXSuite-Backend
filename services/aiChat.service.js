@@ -27,6 +27,7 @@ Rules:
 - You cannot see any other record of the CRM, and you cannot change anything in it. When asked to, say what the person can do themselves.
 - Never decide a price, a discount, a change of owner or a change of stage. You may explain what to think about.
 - Be short and concrete. Use short paragraphs or a short list. No filler, no flattery.
+- Write plain text only. No Markdown: no **bold**, no # headings, no tables. For a list, start each line with "- " or "1.".
 - Money in the records is in Indian rupees.`;
 
 const clip = (text, limit = AI_CHAT.maxAttachmentCharacters) =>
