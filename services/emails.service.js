@@ -450,10 +450,10 @@ export async function writeWithAi(actor, request) {
       : null,
     accountId ? Account.findById(accountId).select('name industry').lean() : null,
     leadId ? Opportunity.findById(leadId).select('name requirement stageId').lean() : null,
-    // For a new mail: what was talked about before with this company (subjects only).
+    // For a new mail: what was talked about before with this company, in a line each.
     !thread && accountId
       ? EmailThread.find({ $and: [{ accountId }, visibleTo(actor)] })
-          .select('subject lastMessageAt')
+          .select('subject lastMessageAt lastDirection snippet ai.summary')
           .sort({ lastMessageAt: -1 })
           .limit(5)
           .lean()
@@ -477,9 +477,12 @@ export async function writeWithAi(actor, request) {
         ? { about: lead.name, requirement: lead.requirement, stage: stage?.name }
         : undefined,
       earlierConversations: earlier.length
-        ? earlier.map(
-            (item) => `${item.subject} (${item.lastMessageAt.toISOString().slice(0, 10)})`,
-          )
+        ? earlier.map((item) => ({
+            subject: item.subject,
+            lastMailOn: item.lastMessageAt.toISOString().slice(0, 10),
+            lastMailFrom: item.lastDirection === 'inbound' ? 'the customer' : 'us',
+            lastMailSays: item.ai?.summary ?? item.snippet,
+          }))
         : undefined,
     },
     messages: emails.reverse().map((email) => ({
