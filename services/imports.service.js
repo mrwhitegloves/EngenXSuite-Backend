@@ -22,11 +22,19 @@ import { scopeFilter } from '../lib/scopeFilter.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { DUPLICATE_MODES, Import, ImportMappingTemplate } from '../models/import.model.js';
+import { LEAD_SOURCES } from '../models/opportunity.model.js';
 import { User } from '../models/user.model.js';
 import { createAccount, deleteAccount, updateAccount } from './accounts.service.js';
 import { loadRequestUser } from './auth.service.js';
 import { createContacts, deleteContact, updateContact } from './contacts.service.js';
 import { suggestCsvMapping } from '../ai/tasks/suggestCsvMapping.js';
+import {
+  leadProblem,
+  loadLeadImportContext,
+  removeImportedLeads,
+  rowGetsLead,
+  saveImportedLead,
+} from './importLeads.service.js';
 import { readRow, suggestMapping, toColumns, uniqueHeaders } from './importRows.service.js';
 
 // CSV import (requirements REQ-IMP-001 … 007). The steps a person goes through:
@@ -83,6 +91,11 @@ async function toDetailView(item) {
     headers: item.headers,
     sampleRows: item.sampleRows,
     mapping: item.mapping.map(({ column, field }) => ({ column, field })),
+    leadOptions: {
+      source: item.leadOptions?.source ?? null,
+      noLeadColumn: item.leadOptions?.noLeadColumn ?? null,
+      noLeadValues: item.leadOptions?.noLeadValues ?? [],
+    },
     // The first failed rows; the error file has all of them.
     rowErrors: (item.rowErrors ?? []).slice(0, 50),
     // A link that works for an hour (the bucket is private).
@@ -119,12 +132,15 @@ function toTemplateView(template) {
 export async function getImportOptions() {
   const templates = await ImportMappingTemplate.find().sort({ nameKey: 1 }).lean();
   return {
-    fields: IMPORT_FIELDS.map(({ field, label, group, required }) => ({
+    fields: IMPORT_FIELDS.map(({ field, label, group, required, multi }) => ({
       field,
       label,
       group,
       required: Boolean(required),
+      // May be chosen for several columns.
+      ...(multi ? { multi: true } : {}),
     })),
+    leadSources: LEAD_SOURCES,
     duplicateModes: DUPLICATE_MODES,
     limits: { maxBytes: MAX_IMPORT_BYTES, maxRows: MAX_IMPORT_ROWS },
     storage: isStorageConfigured() ? 'configured' : 'not_configured',
@@ -261,7 +277,7 @@ function findExistingContact(accountId, contact) {
  * Step 3: check every row with the chosen mapping. Nothing is saved except the mapping itself.
  * @param {{ mapping: { column: string, field: string }[], duplicateMode: string }} data  Validated
  */
-export async function previewImport(actor, importId, { mapping, duplicateMode }) {
+export async function previewImport(actor, importId, { mapping, duplicateMode, leadOptions }) {
   const item = await loadImport(actor, importId);
   if (!OPEN_STATUSES.includes(item.status)) throw conflict('This import has already been started.');
   const columns = toColumns(mapping, item.headers);
@@ -275,18 +291,26 @@ export async function previewImport(actor, importId, { mapping, duplicateMode })
     newCompanies: 0,
     existing: 0,
     people: 0,
+    // Only for a file with lead columns.
+    ...(columns.some((column) => column.field.startsWith('lead.')) ? { leads: 0 } : {}),
   };
   const problems = [];
+  const withOptions = { headers: item.headers, leadOptions };
+  const leadContext = await loadLeadImportContext();
   // Companies an earlier row of this same file will create.
   const earlierInFile = new Set();
   for (const [index, cells] of rows.entries()) {
-    const { account, contact, errors } = readRow(cells, columns);
+    const { account, contact, lead, errors } = readRow(cells, columns);
+    const getsLead = Boolean(lead) && rowGetsLead(withOptions, cells);
+    const problem = getsLead ? leadProblem(lead, leadContext) : null;
+    if (problem) errors.push(problem);
     if (errors.length > 0) {
       counts.invalid += 1;
       if (problems.length < 50) problems.push({ row: index + 1, message: errors.join(' · ') });
       continue;
     }
     counts.valid += 1;
+    if (getsLead) counts.leads += 1;
     if (contact) counts.people += 1;
     const nameKey = toNameKey(account.name);
     if (earlierInFile.has(nameKey) || (await findExistingAccount(account))) counts.existing += 1;
@@ -296,7 +320,7 @@ export async function previewImport(actor, importId, { mapping, duplicateMode })
 
   await Import.updateOne(
     { _id: item._id, status: { $in: OPEN_STATUSES } },
-    { $set: { mapping, duplicateMode, status: 'mapped' } },
+    { $set: { mapping, duplicateMode, status: 'mapped', ...(leadOptions ? { leadOptions } : {}) } },
   );
   return { counts, problems };
 }
@@ -356,7 +380,14 @@ export async function startImport(actor, importId, data, context = {}) {
   // Only one request can move it from "open" to "queued": a double click starts one run.
   const started = await Import.findOneAndUpdate(
     { _id: item._id, status: { $in: OPEN_STATUSES } },
-    { $set: { mapping: data.mapping, duplicateMode: data.duplicateMode, status: 'queued' } },
+    {
+      $set: {
+        mapping: data.mapping,
+        duplicateMode: data.duplicateMode,
+        status: 'queued',
+        ...(data.leadOptions ? { leadOptions: data.leadOptions } : {}),
+      },
+    },
     { returnDocument: 'after' },
   ).lean();
   if (!started) throw conflict('This import has already been started.');
@@ -412,9 +443,13 @@ const filledOnly = (data, leaveOut = []) =>
  * Save one row. Returns what became of it: created (a new company), updated (an existing
  * company was changed or got a new person), or skipped (nothing was changed).
  */
-async function applyRow(actor, item, rowNumber, cells, columns) {
-  const { account, contact, errors } = readRow(cells, columns);
+async function applyRow(actor, item, rowNumber, cells, columns, leadContext) {
+  const { account, contact, lead, errors } = readRow(cells, columns);
   if (errors.length > 0) throw badRequest(errors.join(' · '));
+  const getsLead = Boolean(lead) && rowGetsLead(item, cells);
+  // Checked before anything of the row is saved.
+  const problem = getsLead ? leadProblem(lead, leadContext) : null;
+  if (problem) throw badRequest(problem);
   const context = { importId: item._id, importRow: rowNumber, quiet: true };
   const existing = item.duplicateMode === 'create' ? null : await findExistingAccount(account);
 
@@ -443,11 +478,14 @@ async function applyRow(actor, item, rowNumber, cells, columns) {
     }
   }
 
+  let contactId;
   if (contact) {
     const person = existing ? await findExistingContact(accountId, contact) : null;
+    contactId = person?._id;
     try {
       if (!person) {
-        await createContacts(actor, accountId, [contact], context);
+        const [added] = await createContacts(actor, accountId, [contact], context);
+        contactId = added.id;
         if (outcome === 'skipped') outcome = 'updated';
       } else if (item.duplicateMode === 'update') {
         const before = person.updatedAt;
@@ -464,7 +502,27 @@ async function applyRow(actor, item, rowNumber, cells, columns) {
       throw badRequest(`${prefix}: ${failureMessage(error)}`);
     }
   }
-  return outcome;
+
+  let madeLead = false;
+  if (getsLead) {
+    try {
+      const result = await saveImportedLead(
+        actor,
+        item,
+        rowNumber,
+        { accountId, contactId, companyName: account.name, lead },
+        leadContext,
+      );
+      madeLead = result === 'created';
+      if (madeLead && outcome === 'skipped') outcome = 'updated';
+    } catch (error) {
+      // The company and the person of the row are saved already; say so.
+      throw badRequest(
+        `The company and the person were saved, but the lead was not: ${failureMessage(error)}`,
+      );
+    }
+  }
+  return { outcome, madeLead };
 }
 
 async function finish(item, set, reason) {
@@ -494,6 +552,7 @@ export async function runImport(importId) {
     const rows = await readFileRows(item);
     if (!rows) return await stop('The uploaded file is no longer in storage.');
     const columns = toColumns(item.mapping, item.headers);
+    const leadContext = await loadLeadImportContext();
 
     let done = item.processedRows;
     // Cut off after a row's company was saved but before that was noted: do not save it again.
@@ -508,9 +567,17 @@ export async function runImport(importId) {
     for (; done < rows.length; done += 1) {
       const rowNumber = done + 1;
       let outcome;
+      let madeLead = false;
       let message;
       try {
-        outcome = await applyRow(actor, item, rowNumber, rows[done], columns);
+        ({ outcome, madeLead } = await applyRow(
+          actor,
+          item,
+          rowNumber,
+          rows[done],
+          columns,
+          leadContext,
+        ));
       } catch (error) {
         if (!error?.isAppError) logger.error({ err: error, rowNumber }, 'Import row failed');
         outcome = 'failed';
@@ -519,7 +586,11 @@ export async function runImport(importId) {
       await Import.updateOne(
         { _id: item._id },
         {
-          $inc: { processedRows: 1, [`counts.${outcome}`]: 1 },
+          $inc: {
+            processedRows: 1,
+            [`counts.${outcome}`]: 1,
+            ...(madeLead ? { 'counts.leads': 1 } : {}),
+          },
           $set: { heartbeatAt: new Date() },
           ...(message ? { $push: { rowErrors: { row: rowNumber, message } } } : {}),
         },
@@ -562,6 +633,7 @@ export async function runImport(importId) {
     // One announcement for the whole batch, not one per row.
     emitToAll(SOCKET_EVENTS.accountsChanged);
     emitToAll(SOCKET_EVENTS.contactsChanged);
+    if (result.counts.leads > 0) emitToAll(SOCKET_EVENTS.opportunitiesChanged);
     return { rows: rows.length, ...result.counts };
   } catch (error) {
     logger.error({ err: error, importId: String(item._id) }, 'Import failed');
@@ -604,6 +676,14 @@ export async function runImportUndo(importId) {
   const actor = await loadRequestUser(item.undoneBy);
   const counts = { accountsRemoved: 0, contactsRemoved: 0, kept: 0 };
   const quiet = { quiet: true };
+  // The leads go first: a company that still has an open lead cannot be deleted.
+  if (actor) {
+    const leads = await removeImportedLeads(actor, item._id, () =>
+      Import.updateOne({ _id: item._id }, { $set: { heartbeatAt: new Date() } }),
+    );
+    if (leads.removed > 0) counts.leadsRemoved = leads.removed;
+    counts.kept += leads.kept;
+  }
 
   const remove = async (records, removeOne, counter) => {
     for (const record of records) {
@@ -637,6 +717,7 @@ export async function runImportUndo(importId) {
   emitToAll(SOCKET_EVENTS.accountsChanged);
   emitToAll(SOCKET_EVENTS.contactsChanged);
   emitToAll(SOCKET_EVENTS.plantsChanged);
+  if (counts.leadsRemoved > 0) emitToAll(SOCKET_EVENTS.opportunitiesChanged);
   emitToUser(item.createdBy, SOCKET_EVENTS.importsChanged);
   if (String(item.undoneBy) !== String(item.createdBy)) {
     emitToUser(item.undoneBy, SOCKET_EVENTS.importsChanged);

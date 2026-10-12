@@ -3,7 +3,8 @@
 //
 // `aliases` are column headings that mean this field, written in lowercase letters and digits
 // only ("Company Name" → "companyname"). They are used to SUGGEST a mapping; the person always
-// confirms it. Email and phone columns are recognised by lib/fieldNames.js, whatever they are
+// confirms it. `multi`: the field may be chosen for several columns: 'first' = the first filled
+// column of a row wins (two files' worth of columns in one sheet), 'all' = every one is kept. Email and phone columns are recognised by lib/fieldNames.js, whatever they are
 // called (decision 0013).
 
 export const IMPORT_FIELDS = [
@@ -31,7 +32,12 @@ export const IMPORT_FIELDS = [
       'customername',
     ],
   },
-  { field: 'industry', label: 'Industry', aliases: ['industry', 'sector', 'segment', 'vertical'] },
+  {
+    field: 'industry',
+    label: 'Industry',
+    multi: 'first',
+    aliases: ['industry', 'sector', 'segment', 'vertical'],
+  },
   { field: 'companyType', label: 'Group / company type', aliases: ['companytype', 'type'] },
   {
     field: 'website',
@@ -104,12 +110,14 @@ export const IMPORT_FIELDS = [
   {
     field: 'contact.designation',
     label: 'Person designation',
+    multi: 'first',
     aliases: ['designation', 'title', 'jobtitle', 'position', 'role'],
   },
   {
     field: 'contact.department',
     label: 'Person department',
-    aliases: ['department', 'dept', 'function'],
+    multi: 'first',
+    aliases: ['department', 'departments', 'dept', 'function'],
   },
   { field: 'contact.phone_number', label: 'Person phone', aliases: [] },
   {
@@ -121,7 +129,59 @@ export const IMPORT_FIELDS = [
   {
     field: 'contact.linkedinUrl',
     label: 'Person LinkedIn profile',
-    aliases: ['personlinkedin', 'contactlinkedin', 'linkedinprofile', 'profileurl'],
+    aliases: [
+      'personlinkedin',
+      'personlinkedinurl',
+      'contactlinkedin',
+      'linkedinprofile',
+      'profileurl',
+    ],
+  },
+
+  // The lead. A file with any of these columns makes a lead for each row (company + person +
+  // lead), unless the import says for which rows not to (services/importLeads.service.js).
+  {
+    field: 'lead.name',
+    label: 'What the lead is about',
+    group: 'Lead',
+    aliases: ['leadname', 'opportunity', 'opportunityname', 'deal', 'dealname'],
+  },
+  // Matched by name against Settings → Statuses (lead statuses).
+  { field: 'lead.status', label: 'Lead status', aliases: ['status', 'leadstatus'] },
+  {
+    field: 'lead.createdAt',
+    label: 'Date the lead came in',
+    aliases: ['createdtime', 'createdat', 'createddate', 'leaddate', 'submittedat'],
+  },
+  { field: 'lead.requirement', label: 'What they need', aliases: ['requirement', 'enquiry'] },
+  {
+    field: 'lead.problemStatement',
+    label: 'The problem today',
+    multi: 'first',
+    aliases: ['problem', 'challenge', 'painpoint'],
+  },
+  {
+    field: 'lead.decisionTimeline',
+    label: 'They decide',
+    multi: 'first',
+    aliases: ['decisiontimeline', 'timeline'],
+  },
+  { field: 'lead.campaign', label: 'Campaign', aliases: ['campaign', 'campaignname'] },
+  { field: 'lead.adSet', label: 'Ad set', aliases: ['adset', 'adsetname'] },
+  { field: 'lead.ad', label: 'Ad', aliases: ['ad', 'adname'] },
+  { field: 'lead.form', label: 'Lead form', aliases: ['form', 'formname'] },
+  {
+    field: 'lead.externalId',
+    label: 'Id of the lead at its source',
+    aliases: ['leadgenid', 'leadid', 'externalid'],
+  },
+  // These two can be chosen for many columns: each filled one becomes (part of) a note.
+  { field: 'lead.note', label: 'Note on the lead', multi: 'all', aliases: [] },
+  {
+    field: 'lead.answer',
+    label: 'Answer from the form (kept in a note)',
+    multi: 'all',
+    aliases: [],
   },
 ].map((item, index, list) => ({
   ...item,

@@ -615,6 +615,15 @@ export async function createLead(actor, data, context = {}) {
     ...(context.inbound
       ? { leadId: context.inbound.leadId, sourceDetail: context.inbound.sourceDetail }
       : { formFilledBy: actor._id }),
+    // A file import: which import it came from, where the enquiry came from, and the day it
+    // really came in.
+    ...(context.imported
+      ? {
+          importId: context.importId,
+          sourceDetail: context.imported.sourceDetail,
+          ...(context.imported.createdAt ? { createdAt: context.imported.createdAt } : {}),
+        }
+      : {}),
   };
 
   // The lead and the first row of its stage history are saved together.

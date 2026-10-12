@@ -42,6 +42,13 @@ const importSchema = new mongoose.Schema(
     mapping: { type: [mappingSchema], default: [] },
     mappingTemplateId: { type: ObjectId, ref: 'ImportMappingTemplate' },
     duplicateMode: { type: String, enum: DUPLICATE_MODES, default: 'skip' },
+    // For a file with lead columns: where the leads come from, and for which rows NO lead is
+    // made (rows whose `noLeadColumn` holds one of `noLeadValues`: company and person only).
+    leadOptions: {
+      source: { type: String },
+      noLeadColumn: { type: String },
+      noLeadValues: { type: [String], default: undefined },
+    },
     status: { type: String, enum: IMPORT_STATUSES, default: 'uploaded' },
 
     // Rows done so far (the run continues from here after a restart) and what became of them.
@@ -51,6 +58,8 @@ const importSchema = new mongoose.Schema(
       updated: { type: Number, default: 0 },
       skipped: { type: Number, default: 0 },
       failed: { type: Number, default: 0 },
+      // How many rows got a lead (counted beside the four above). Only for files with leads.
+      leads: { type: Number },
     },
     // Why each failed row failed. `row` counts data rows from 1 (the heading row is not counted).
     rowErrors: {
@@ -66,6 +75,7 @@ const importSchema = new mongoose.Schema(
     undo: {
       accountsRemoved: { type: Number },
       contactsRemoved: { type: Number },
+      leadsRemoved: { type: Number },
       kept: { type: Number },
     },
 

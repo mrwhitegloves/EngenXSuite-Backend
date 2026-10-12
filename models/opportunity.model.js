@@ -7,7 +7,16 @@ import mongoose from 'mongoose';
 
 const { ObjectId } = mongoose.Schema.Types;
 
-export const LEAD_SOURCES = ['manual', 'meta_ads', 'website', 'email', 'import', 'referral'];
+export const LEAD_SOURCES = [
+  'manual',
+  'meta_ads',
+  'website',
+  'email',
+  'import',
+  'referral',
+  // A list from the data provider Apollo (founder decision 2026-10-12).
+  'apollo',
+];
 export const FEASIBILITY = ['unknown', 'feasible', 'needs_study', 'not_feasible'];
 export const BUDGET_STATUSES = ['unknown', 'no_budget', 'planned', 'approved'];
 export const RISK_LEVELS = ['low', 'medium', 'high'];
@@ -110,7 +119,9 @@ const opportunitySchema = new mongoose.Schema(
     source: { type: String, enum: LEAD_SOURCES, required: true, default: 'manual' },
     sourceDetail: {
       type: new mongoose.Schema(
-        { campaign: String, adSet: String, ad: String, form: String },
+        // externalId: the lead's own id at its source (Meta's leadgen id), so the same enquiry
+        // is never made a lead twice.
+        { campaign: String, adSet: String, ad: String, form: String, externalId: String },
         { _id: false },
       ),
       default: undefined,

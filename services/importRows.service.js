@@ -11,12 +11,15 @@ import { createAccountBody } from '../validation/accounts.js';
 import { createContactBody } from '../validation/contacts.js';
 
 // Reading an imported file, without touching the database: its headings, which column fills
-// which field, and what one row says about a company and a person. The same checks as the
-// forms are used (validation/accounts.js, validation/contacts.js), so a row that imports is a
-// row the form would have accepted.
+// which field, and what one row says about a company, a person and (when the file has lead
+// columns) a lead. The same checks as the forms are used (validation/accounts.js,
+// validation/contacts.js), so a row that imports is a row the form would have accepted.
 
 const PERSON_PREFIX = 'contact.';
-const labelOf = (field) => IMPORT_FIELDS.find((item) => item.field === field)?.label ?? field;
+const LEAD_PREFIX = 'lead.';
+const fieldOf = (field) => IMPORT_FIELDS.find((item) => item.field === field);
+const labelOf = (field) => fieldOf(field)?.label ?? field;
+const isMulti = (field) => Boolean(fieldOf(field)?.multi);
 const headingKey = (heading) => heading.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 
 /**
@@ -35,15 +38,35 @@ export function uniqueHeaders(cells) {
 }
 
 /**
+ * Headings of an exported lead list that no alias names: its comment columns, and the
+ * questions of a lead form (a heading that ends with "?").
+ */
+function leadColumnField(column) {
+  const key = headingKey(column);
+  if (/^(comments?|notes?|remarks?)\d+(text)?$/.test(key)) return 'lead.note';
+  if (!column.trim().endsWith('?')) return null;
+  if (/role|designation/.test(key)) return 'contact.designation';
+  if (/industry/.test(key)) return 'industry';
+  // (A budget question may speak of "this problem": it is not the problem itself.)
+  if (/challenge|painpoint/.test(key) || (/problem/.test(key) && !/budget/.test(key))) {
+    return 'lead.problemStatement';
+  }
+  if (/howsoon|lookingtodo|timeline|whendoyou/.test(key)) return 'lead.decisionTimeline';
+  return 'lead.answer';
+}
+
+/**
  * A first guess of which column fills which field, from the headings alone.
  * @param {string[]} headers
  * @returns {{ column: string, field: string }[]} In the order of the columns
  */
 export function suggestMapping(headers) {
-  const columnOf = new Map(); // field → column
-  const isFree = (column) => ![...columnOf.values()].includes(column);
+  const chosen = new Map(); // column → field
+  const isFree = (column) => !chosen.has(column);
+  const isTaken = (field) => [...chosen.values()].includes(field);
+  // A field is given once, except the ones that may be chosen for several columns.
   const give = (field, column) => {
-    if (!columnOf.has(field) && isFree(column)) columnOf.set(field, column);
+    if (isFree(column) && (isMulti(field) || !isTaken(field))) chosen.set(column, field);
   };
 
   // 1. Headings that name a field.
@@ -53,14 +76,20 @@ export function suggestMapping(headers) {
   }
   // 2. A plain "Name" is the company, unless another column already names the company.
   for (const column of headers) {
-    if (headingKey(column) === 'name') give(columnOf.has('name') ? 'contact.name' : 'name', column);
+    if (headingKey(column) === 'name') give(isTaken('name') ? 'contact.name' : 'name', column);
   }
-  // 3. Email and phone columns, whatever they are called. They belong to the person when the
+  // 3. Comment columns and the questions of a lead form.
+  for (const column of headers.filter(isFree)) {
+    const field = leadColumnField(column);
+    if (field) give(field, column);
+  }
+  // 4. Email and phone columns, whatever they are called. They belong to the person when the
   //    file names a person, and to the company otherwise (or when the heading says so).
-  const hasPerson = columnOf.has('contact.name');
+  //    A "normalized" copy of a phone column is the same number again: left out.
+  const hasPerson = isTaken('contact.name');
   for (const column of headers.filter(isFree)) {
     const kind = canonicalFieldName(column);
-    if (!kind) continue;
+    if (!kind || /normali[sz]ed/i.test(column)) continue;
     const forPerson = hasPerson && !/company|office|business|firm/i.test(column);
     const choices = {
       [EMAIL_FIELD]: forPerson ? ['contact.email', 'email'] : ['email'],
@@ -68,21 +97,20 @@ export function suggestMapping(headers) {
         ? ['contact.phone_number', 'contact.alt_phone_number', 'phone_number']
         : ['phone_number'],
     }[kind];
-    const field = choices.find((choice) => !columnOf.has(choice));
+    const field = choices.find((choice) => !isTaken(choice));
     if (field) give(field, column);
   }
 
-  const fieldOf = new Map([...columnOf].map(([field, column]) => [column, field]));
   return headers
-    .filter((column) => fieldOf.has(column))
-    .map((column) => ({ column, field: fieldOf.get(column) }));
+    .filter((column) => chosen.has(column))
+    .map((column) => ({ column, field: chosen.get(column) }));
 }
 
 /**
  * Check a mapping the person chose and turn it into column positions.
  * @param {{ column: string, field: string }[]} mapping
  * @param {string[]} headers
- * @returns {{ index: number, field: string }[]}
+ * @returns {{ index: number, field: string, column: string }[]}  In the order of the file
  */
 export function toColumns(mapping, headers) {
   const problem = (message) => badRequest(message, [{ field: 'mapping', message }]);
@@ -94,14 +122,21 @@ export function toColumns(mapping, headers) {
   const unknownColumn = columns.find((column) => !headers.includes(column));
   if (unknownColumn) throw problem(`The file has no column "${unknownColumn}".`);
   const twice = (values) => values.find((value, index) => values.indexOf(value) !== index);
-  if (twice(fields)) throw problem(`"${labelOf(twice(fields))}" is chosen for two columns.`);
+  const fieldTwice = twice(fields.filter((field) => !isMulti(field)));
+  if (fieldTwice) throw problem(`"${labelOf(fieldTwice)}" is chosen for two columns.`);
   if (twice(columns)) throw problem(`The column "${twice(columns)}" is used twice.`);
   if (!fields.includes('name')) throw problem('Choose the column that holds the company name.');
   const hasPersonField = fields.some((field) => field.startsWith(PERSON_PREFIX));
   if (hasPersonField && !fields.includes('contact.name')) {
     throw problem('Choose the column with the person’s name, or leave the person columns out.');
   }
-  return mapping.map((item) => ({ index: headers.indexOf(item.column), field: item.field }));
+  return mapping
+    .map((item) => ({
+      index: headers.indexOf(item.column),
+      field: item.field,
+      column: item.column,
+    }))
+    .sort((a, b) => a.index - b.index);
 }
 
 /** "250", "1,200 people" or "51-200" → one of the size groups; null when it cannot be read. */
@@ -127,22 +162,59 @@ function toPaise(value) {
 const zodMessages = (error, prefix) =>
   error.issues.map((issue) => `${labelOf(`${prefix}${issue.path.join('.')}`)}: ${issue.message}`);
 
+const capitalise = (text) => text.charAt(0).toUpperCase() + text.slice(1);
+/**
+ * A form's coded answer as words: "plant_head" → "Plant head", "a_b|c_d" → "A b, c d".
+ * Text that is written normally (it has spaces) is left as it is.
+ */
+export function tidyAnswer(value) {
+  if (!value.includes('_') || /\s/.test(value)) return value;
+  return capitalise(value.replace(/\|/g, ', ').replace(/_/g, ' ').replace(/\s+/g, ' ').trim());
+}
+/** A form's question as it was asked: "what_is_your_role?" → "What is your role?". */
+const tidyQuestion = (heading) => capitalise(heading.replace(/_/g, ' ').trim());
+/** A phone number as exports write it: "p:+9198…" and "'+9198…" → "+9198…". */
+const tidyPhone = (value) => value.replace(/^['’`]+/, '').replace(/^p:\s*/i, '');
+// Fields whose value may be a form's coded answer.
+const CODED = ['industry', 'contact.designation', 'lead.problemStatement', 'lead.decisionTimeline'];
+
 /**
  * What one row of the file says.
  * @param {string[]} cells
- * @param {{ index: number, field: string }[]} columns  From toColumns()
- * @returns {{ account: object | null, contact: object | null, errors: string[] }}
+ * @param {{ index: number, field: string, column: string }[]} columns  From toColumns()
+ * @returns {{ account: object | null, contact: object | null, lead: object | null,
+ *             errors: string[] }}
  *          account / contact are ready for createAccount() / createContacts(); contact is null
- *          when the row names no person. With errors, nothing of the row is saved.
+ *          when the row names no person. lead is null when the mapping has no lead column;
+ *          else { name?, status?, createdAt?, requirement?, problemStatement?,
+ *          decisionTimeline?, campaign?, adSet?, ad?, form?, externalId?, notes: string[],
+ *          answers: { question, answer }[] }. With errors, nothing of the row is saved.
  */
 export function readRow(cells, columns) {
   const company = {};
   const person = {};
-  for (const { index, field } of columns) {
-    const value = String(cells[index] ?? '').trim();
+  const lead = { notes: [], answers: [] };
+  for (const { index, field, column } of columns) {
+    let value = String(cells[index] ?? '').trim();
     if (value === '') continue;
-    if (field.startsWith(PERSON_PREFIX)) person[field.slice(PERSON_PREFIX.length)] = value;
-    else company[field] = value;
+    if (CODED.includes(field)) value = tidyAnswer(value);
+    if (field === 'lead.note') {
+      lead.notes.push(value.slice(0, 5000));
+    } else if (field === 'lead.answer') {
+      lead.answers.push({ question: tidyQuestion(column), answer: tidyAnswer(value) });
+    } else if (field.startsWith(LEAD_PREFIX)) {
+      // Chosen for several columns: the first filled one wins.
+      lead[field.slice(LEAD_PREFIX.length)] ??= value;
+    } else if (field.startsWith(PERSON_PREFIX)) {
+      person[field.slice(PERSON_PREFIX.length)] ??= value;
+    } else {
+      company[field] ??= value;
+    }
+  }
+  for (const record of [company, person]) {
+    for (const key of ['phone_number', 'alt_phone_number']) {
+      if (record[key]) record[key] = tidyPhone(record[key]);
+    }
   }
   // Emails and phone numbers get their one stored form (decision 0013).
   const companyFields = normalizeInboundFields(company).fields;
@@ -181,6 +253,34 @@ export function readRow(cells, columns) {
     else errors.push(...zodMessages(parsedContact.error, PERSON_PREFIX));
   }
 
-  if (errors.length > 0) return { account: null, contact: null, errors };
-  return { account: parsedAccount.data, contact, errors };
+  const hasLeadColumns = columns.some((item) => item.field.startsWith(LEAD_PREFIX));
+  if (hasLeadColumns) {
+    if (lead.createdAt) {
+      const moment = new Date(lead.createdAt);
+      if (Number.isNaN(moment.getTime())) {
+        errors.push(`${labelOf('lead.createdAt')}: "${lead.createdAt}" is not a date`);
+      } else {
+        lead.createdAt = moment;
+      }
+    }
+    // The source's own prefix ("l:1234") is not part of the id.
+    if (lead.externalId)
+      lead.externalId = lead.externalId.replace(/^[a-z]{1,3}:/i, '').slice(0, 100);
+    for (const [key, limit] of [
+      ['name', 150],
+      ['requirement', 2000],
+      ['problemStatement', 2000],
+      ['decisionTimeline', 200],
+    ]) {
+      if (lead[key]) lead[key] = lead[key].slice(0, limit);
+    }
+  }
+
+  if (errors.length > 0) return { account: null, contact: null, lead: null, errors };
+  return {
+    account: parsedAccount.data,
+    contact,
+    lead: hasLeadColumns ? lead : null,
+    errors,
+  };
 }
