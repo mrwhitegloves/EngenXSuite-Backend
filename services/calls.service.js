@@ -18,6 +18,7 @@ import { can } from '../lib/can.js';
 import { badRequest, conflict, createAppError, forbidden, notFound } from '../lib/errors.js';
 import { normalizePhone } from '../lib/phone.js';
 import { runListQuery } from '../lib/queryBuilder.js';
+import { scopeFilter } from '../lib/scopeFilter.js';
 import { systemActor } from '../lib/systemActor.js';
 import { Account } from '../models/account.model.js';
 import { Call } from '../models/call.model.js';
@@ -26,7 +27,7 @@ import { Opportunity } from '../models/opportunity.model.js';
 import { Settings } from '../models/settings.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction } from './accounts.service.js';
-import { recordActivity } from './activities.service.js';
+import { recordActivity, relinkActivity } from './activities.service.js';
 import { notify } from './notifications.service.js';
 import { loadLeadForAction } from './opportunities.service.js';
 import { createTask } from './tasks.service.js';
@@ -61,6 +62,7 @@ async function readSettings() {
   const settings = await Settings.findOne({ key: 'app' }).select('calls').lean();
   return {
     recordingEnabled: settings?.calls?.recordingEnabled ?? false,
+    announcementEnabled: settings?.calls?.announcementEnabled ?? true,
     consentText: settings?.calls?.consentText || DEFAULT_CONSENT,
     defaultInboundUserId: settings?.calls?.defaultInboundUserId ?? null,
   };
@@ -83,6 +85,7 @@ export async function getCallSettings() {
   ]);
   return {
     recordingEnabled: settings.recordingEnabled,
+    announcementEnabled: settings.announcementEnabled,
     consentText: settings.consentText,
     defaultInboundUserId: settings.defaultInboundUserId
       ? String(settings.defaultInboundUserId)
@@ -170,6 +173,8 @@ async function toViews(calls, actor) {
       startedAt: call.startedAt ?? call.createdAt,
       durationSec: call.durationSec ?? null,
       hangupCause: call.hangupCause ?? null,
+      // What Plivo charged, in the currency of the Plivo account.
+      cost: call.cost ?? null,
       outcome: call.outcome ?? null,
       user: named(users, call.userId),
       contact: named(contacts, call.contactId),
@@ -276,7 +281,14 @@ export async function listCalls(actor, query) {
     });
     filter = { contactId: contact._id };
   } else {
-    throw badRequest('Say which lead, company or contact the calls are of.');
+    // Every call I may see: mine, my team's or everyone's, by the "calls" permission.
+    filter = {
+      $and: [
+        scopeFilter(actor, FEATURE, OWNERSHIP),
+        query.linked === 'no' ? { contactId: null } : {},
+        query.linked === 'yes' ? { contactId: { $ne: null } } : {},
+      ],
+    };
   }
   const { rows, pagination } = await runListQuery(Call, {
     filter,
@@ -299,22 +311,104 @@ async function loadCallForAction(actor, callId, action) {
   return call;
 }
 
-/** Say what came of a call. @param {{ outcome: string | null }} changes  Validated */
-export async function updateCall(actor, callId, { outcome }, context = {}) {
-  const call = await loadCallForAction(actor, callId, 'edit');
+/** The newest open lead of a person (or of their company) that this user may see. */
+async function openLeadFor(actor, contact) {
+  const leads = await Opportunity.find({
+    ...NOT_DELETED,
+    status: 'open',
+    $or: [{ primaryContactId: contact._id }, { accountId: contact.accountId }],
+  })
+    .select('_id')
+    .sort({ createdAt: -1 })
+    .limit(5)
+    .lean();
+  for (const lead of leads) {
+    const visible = await loadLeadForAction(actor, lead._id, 'view').catch(() => null);
+    if (visible) return visible;
+  }
+  return null;
+}
+
+/**
+ * Put a call on another person (or on nobody), and move its timeline entry with it.
+ * @returns {Promise<{ contactId: unknown, accountId: unknown, opportunityId: unknown }>}
+ */
+async function relink(actor, call, contactId) {
+  let links = { contactId: null, accountId: null, opportunityId: null };
+  let who = call.direction === 'outbound' ? call.toNumber : call.fromNumber;
+  if (contactId) {
+    const contact = await Contact.findOne({ _id: contactId, ...NOT_DELETED }).lean();
+    if (!contact) throw notFound('Contact not found');
+    await loadAccountForAction(actor, contact.accountId, 'view').catch(() => {
+      throw notFound('Contact not found');
+    });
+    const lead = await openLeadFor(actor, contact);
+    links = {
+      contactId: contact._id,
+      accountId: contact.accountId,
+      opportunityId: lead?._id ?? null,
+    };
+    who = contact.name;
+  }
+  const set = Object.fromEntries(Object.entries(links).filter(([, value]) => value));
+  const unset = Object.fromEntries(
+    Object.entries(links)
+      .filter(([, value]) => !value)
+      .map(([field]) => [field, '']),
+  );
   await Call.updateOne(
     { _id: call._id },
-    outcome === null ? { $unset: { outcome: '' } } : { $set: { outcome } },
+    {
+      ...(Object.keys(set).length ? { $set: set } : {}),
+      ...(Object.keys(unset).length ? { $unset: unset } : {}),
+    },
   );
-  await writeAudit({
-    actor,
-    action: 'call.outcome_set',
-    entityType: 'calls',
-    entityId: call._id,
-    oldValue: { outcome: call.outcome ?? null },
-    newValue: { outcome },
-    requestId: context.requestId,
-  });
+  // A finished call has (or now gets) its entry on the timeline of the right records.
+  if (call.endedAt) {
+    const entry = timelineEntry({ ...call, ...links }, who);
+    const moved = await relinkActivity(
+      { refCollection: 'calls', refId: call._id, subtype: 'call_ended' },
+      { ...links, title: entry.title },
+    );
+    if (!moved && contactId) await recordActivity(entry);
+  }
+  return links;
+}
+
+/**
+ * Say what came of a call, or put it on the right person.
+ * @param {{ outcome?: string | null, contactId?: string | null }} changes  Validated
+ */
+export async function updateCall(actor, callId, changes, context = {}) {
+  const call = await loadCallForAction(actor, callId, 'edit');
+  if ('outcome' in changes) {
+    const { outcome } = changes;
+    await Call.updateOne(
+      { _id: call._id },
+      outcome === null ? { $unset: { outcome: '' } } : { $set: { outcome } },
+    );
+    await writeAudit({
+      actor,
+      action: 'call.outcome_set',
+      entityType: 'calls',
+      entityId: call._id,
+      oldValue: { outcome: call.outcome ?? null },
+      newValue: { outcome },
+      requestId: context.requestId,
+    });
+  }
+  if ('contactId' in changes) {
+    const links = await relink(actor, call, changes.contactId);
+    await writeAudit({
+      actor,
+      action: 'call.relinked',
+      entityType: 'calls',
+      entityId: call._id,
+      oldValue: { contactId: call.contactId ? String(call.contactId) : null },
+      newValue: { contactId: links.contactId ? String(links.contactId) : null },
+      requestId: context.requestId,
+    });
+  }
   announce();
   return (await toViews([await Call.findById(call._id).lean()], actor))[0];
 }
@@ -339,12 +433,12 @@ export async function getRecordingLink(actor, callId, context = {}) {
 async function recordingOptions(callId) {
   const settings = await readSettings();
   if (!settings.recordingEnabled) return {};
+  const recordingUrl = plivoUrl('recording', { call: callId });
+  // Recording without the announcement is a setting (Settings → Calls).
+  if (!settings.announcementEnabled) return { recordingUrl };
   await Call.updateOne({ _id: callId }, { $set: { recordingConsentPlayed: true } });
-  return {
-    recordingUrl: plivoUrl('recording', { call: callId }),
-    // The announcement is said to the side that is being dialled, before the two are joined.
-    consentUrl: plivoUrl('consent'),
-  };
+  // The announcement is said to the side that is being dialled, before the two are joined.
+  return { recordingUrl, consentUrl: plivoUrl('consent') };
 }
 
 /** Click-to-call: the agent picked up. "Now dial the customer." */
@@ -469,6 +563,27 @@ function resultOf(call) {
   return { ...base, status: status ?? 'failed', hangupCause: dial.DialStatus };
 }
 
+/** The timeline entry of a finished call. `who`: the name of the other side, or their number. */
+function timelineEntry(call, who) {
+  const how =
+    call.status === 'completed' ? clock(call.durationSec ?? 0) : RESULT_WORDS[call.status];
+  return {
+    type: 'CALL',
+    subtype: 'call_ended',
+    direction: call.direction,
+    contactId: call.contactId ?? undefined,
+    accountId: call.accountId ?? undefined,
+    opportunityId: call.opportunityId ?? undefined,
+    userId: call.userId,
+    occurredAt: call.startedAt ?? call.endedAt,
+    title: `${call.direction === 'outbound' ? 'Call to' : 'Call from'} ${who} · ${how}`,
+    status: call.status,
+    refCollection: 'calls',
+    refId: call._id,
+    metadata: { callId: String(call._id), durationSec: call.durationSec ?? 0 },
+  };
+}
+
 /** Everything that happens once, when a call is over. */
 async function finishCall(callId) {
   const call = await Call.findById(callId).lean();
@@ -481,27 +596,11 @@ async function finishCall(callId) {
     ? await Contact.findById(call.contactId).select('name').lean()
     : null;
   const who = contact?.name ?? (call.direction === 'outbound' ? call.toNumber : call.fromNumber);
-  const how =
-    result.status === 'completed' ? clock(result.durationSec) : RESULT_WORDS[result.status];
 
   // On the timeline of the contact, the lead and the company. (A call from a number nobody
-  // knows belongs to no record: it shows only as a missed call to the person it was for.)
+  // knows belongs to no record: it shows in the list of calls, and can be put on a person there.)
   if (call.contactId || call.accountId || call.opportunityId) {
-    await recordActivity({
-      type: 'CALL',
-      subtype: 'call_ended',
-      direction: call.direction,
-      contactId: call.contactId,
-      accountId: call.accountId,
-      opportunityId: call.opportunityId,
-      userId: call.userId,
-      occurredAt: call.startedAt ?? endedAt,
-      title: `${call.direction === 'outbound' ? 'Call to' : 'Call from'} ${who} · ${how}`,
-      status: result.status,
-      refCollection: 'calls',
-      refId: call._id,
-      metadata: { callId: String(call._id), durationSec: result.durationSec },
-    });
+    await recordActivity(timelineEntry({ ...call, ...result, endedAt }, who));
   }
 
   if (call.direction === 'inbound' && result.status === 'missed' && call.userId) {
@@ -510,7 +609,7 @@ async function finishCall(callId) {
       type: 'call_missed',
       title: `Missed call from ${who}`,
       body: contact ? call.fromNumber : 'A number that is not in the CRM',
-      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : '/activities',
+      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : '/activities?view=calls',
       dedupeKey: `call-missed:${call._id}`,
     });
     // The call-back task. One per call: a second run finds it there already.

@@ -82,6 +82,36 @@ export async function recordActivity(entry) {
 }
 
 /**
+ * Put an entry that a record wrote (found by its ref) on other records: a call that was matched
+ * to the wrong person, or to nobody. With no record left to show it on, the entry is removed.
+ * @param {{ refCollection: string, refId: unknown, subtype?: string }} ref
+ * @param {{ accountId?: unknown, contactId?: unknown, opportunityId?: unknown, title: string }} links
+ * @returns {Promise<boolean>} false when there was no such entry
+ */
+export async function relinkActivity(ref, { accountId, contactId, opportunityId, title }) {
+  const filter = { refCollection: ref.refCollection, refId: ref.refId, subtype: ref.subtype };
+  let found;
+  if (!accountId && !contactId && !opportunityId) {
+    found = (await Activity.deleteOne(filter)).deletedCount > 0;
+  } else {
+    const fields = { accountId, contactId, opportunityId };
+    const set = Object.fromEntries(Object.entries(fields).filter(([, value]) => value));
+    const unset = Object.fromEntries(
+      Object.entries(fields)
+        .filter(([, value]) => !value)
+        .map(([field]) => [field, '']),
+    );
+    const result = await Activity.updateOne(filter, {
+      $set: { ...set, title },
+      ...(Object.keys(unset).length ? { $unset: unset } : {}),
+    });
+    found = result.matchedCount > 0;
+  }
+  if (found) emitToAll(SOCKET_EVENTS.activitiesChanged);
+  return found;
+}
+
+/**
  * The same, for entries the system adds on the side of another action (a stage change, "lead
  * updated"). A problem with the timeline entry is logged and never undoes that action.
  */

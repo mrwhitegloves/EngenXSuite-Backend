@@ -28,6 +28,9 @@ const settingsSchema = new mongoose.Schema(
     calls: {
       // Record calls (where the law allows it). Off: no call is recorded.
       recordingEnabled: { type: Boolean, default: false },
+      // Say the announcement below before a recorded call is joined. Off: the call is recorded
+      // without telling the other side (founder decision 2026-10-12; the legal risk is theirs).
+      announcementEnabled: { type: Boolean, default: true },
       // Said to the other side before a recorded call is joined.
       consentText: {
         type: String,

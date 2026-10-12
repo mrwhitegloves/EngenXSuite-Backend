@@ -445,8 +445,10 @@ describe('recordings, outcome and settings', () => {
     expect(
       (await asAgent.patch(`/api/calls/${call.id}`).send({ outcome: null })).body.data.outcome,
     ).toBeNull();
-    // A list needs one record to be about, and that record must be visible.
-    expect((await asAgent.get('/api/calls')).status).toBe(400);
+    // The list of one record needs that record to be visible.
+    // (Until 2026-10-12 a list without a record was refused; it is now the list of my calls.)
+    expect((await asAgent.get('/api/calls')).body.data).toHaveLength(1);
+    expect((await asOther.get('/api/calls')).body.data).toHaveLength(0);
     expect((await asOther.get(`/api/calls?opportunityId=${leadId}`)).status).toBe(404);
   });
 
@@ -480,5 +482,67 @@ describe('recordings, outcome and settings', () => {
     expect(
       (await asAgent.patch('/api/settings/calls').send({ recordingEnabled: true })).status,
     ).toBe(403);
+  });
+});
+
+describe('recording without the announcement, the list of every call, and re-linking', () => {
+  it('with the announcement switched off the call is recorded and nothing is said', async () => {
+    await asCeo
+      .patch('/api/settings/calls')
+      .send({ recordingEnabled: true, announcementEnabled: false });
+    expect((await asCeo.get('/api/settings/calls')).body.data.announcementEnabled).toBe(false);
+    const call = (await startCall(asAgent)).body.data;
+    const connect = await hook('connect', { CallUUID: 'request-1' }, { call: call.id });
+    expect(connect.text).toContain('<Record');
+    expect(connect.text).not.toContain('confirmSound');
+    expect((await Call.findById(call.id).lean()).recordingConsentPlayed).toBe(false);
+  });
+
+  it('a call from an unknown number is in the list of calls and can be put on a person', async () => {
+    const ceo = await User.findOne({ email: 'ceo@engenx.in' }).lean();
+    await asCeo.patch('/api/settings/calls').send({ defaultInboundUserId: String(ceo._id) });
+    await hook('inbound', { CallUUID: 'inbound-9', From: '919333333333', To: '918035000000' });
+    const stored = await Call.findOne({ plivoCallUuid: 'inbound-9' }).lean();
+    await hook(
+      'dial-result',
+      {
+        CallUUID: 'inbound-9',
+        DialStatus: 'completed',
+        DialBLegDuration: '40',
+        DialBLegTotalCost: '0.4',
+      },
+      { call: stored._id },
+    );
+    await hook('hangup', { CallUUID: 'inbound-9', CallStatus: 'completed' });
+    expect(await Activity.countDocuments({ type: 'CALL' })).toBe(0);
+
+    // The CEO took it: it is in their list, under "belongs to nobody". Not in an agent's list.
+    const unknown = (await asCeo.get('/api/calls?linked=no')).body.data;
+    expect(unknown).toHaveLength(1);
+    expect(unknown[0]).toMatchObject({ number: '+919333333333', contact: null, cost: 0.4 });
+    expect((await asAgent.get('/api/calls?linked=no')).body.data).toHaveLength(0);
+    expect((await asCeo.get('/api/calls?linked=yes')).body.data).toHaveLength(0);
+
+    // The CEO says who it was: the call, its lead and its timeline entry follow.
+    const linked = await asCeo.patch(`/api/calls/${unknown[0].id}`).send({ contactId });
+    expect(linked.status).toBe(200);
+    expect(linked.body.data).toMatchObject({
+      contact: { name: 'Asha Verma' },
+      opportunityId: leadId,
+    });
+    const entry = await Activity.findOne({ type: 'CALL' }).lean();
+    expect(entry.title).toBe('Call from Asha Verma · 0:40');
+    expect(String(entry.opportunityId)).toBe(leadId);
+    expect(await AuditLog.countDocuments({ action: 'call.relinked' })).toBe(1);
+
+    // Taken off again: the entry leaves the timeline; the call stays.
+    await asCeo.patch(`/api/calls/${unknown[0].id}`).send({ contactId: null });
+    expect(await Activity.countDocuments({ type: 'CALL' })).toBe(0);
+    expect((await asCeo.get('/api/calls?linked=no')).body.data).toHaveLength(1);
+    // A person outside my reach cannot be chosen, and nothing can be sent empty.
+    expect((await asOther.patch(`/api/calls/${unknown[0].id}`).send({ contactId })).status).toBe(
+      404,
+    );
+    expect((await asCeo.patch(`/api/calls/${unknown[0].id}`).send({})).status).toBe(400);
   });
 });

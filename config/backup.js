@@ -9,9 +9,10 @@ export const BACKUP_INDEX_KEY = `${BACKUP_PREFIX}index.json`;
 export const BACKUP_CRON = '0 2 * * *';
 export const BACKUP_TIMEZONE = 'Asia/Kolkata';
 
-// Backups older than this are deleted, but the newest ones are always kept, so a long stretch
-// of failed nights can never delete the last good backup.
-export const BACKUP_KEEP_DAYS = 14;
+// Backups older than this are deleted (founder decision, 2026-10-12: the last 7 days), but the
+// newest ones are always kept, so a long stretch of failed nights can never delete the last
+// good backup. The people who manage the settings are told when backups are deleted.
+export const BACKUP_KEEP_DAYS = 7;
 export const BACKUP_KEEP_AT_LEAST = 7;
 
 // The Backups screen warns when the newest backup is older than this.

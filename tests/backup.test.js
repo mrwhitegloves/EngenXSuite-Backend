@@ -37,6 +37,7 @@ vi.mock('../infra/queues.js', () => ({
 
 const { createApp } = await import('../app.js');
 const { createSessionMiddleware } = await import('../middleware/session.js');
+const { Notification } = await import('../models/notification.model.js');
 const { Role } = await import('../models/role.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed } = await import('../seeds/seed.js');
@@ -195,19 +196,34 @@ describe('database backup and restore', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  it('deletes backups older than 14 days but always keeps the newest 7', async () => {
+  // The rule was 14 days until 2026-10-12 (founder decision: keep the last 7 days).
+  it('deletes backups older than 7 days but always keeps the newest 7, and tells the CEO', async () => {
     const day = (number) => new Date(Date.UTC(2026, 8, number, 20, 30));
     for (let number = 1; number <= 20; number += 1) await createBackup({ now: day(number) });
-    // On day 20, days 1 to 5 are older than 14 days.
+    // On day 20, days 1 to 12 are older than 7 days.
     const kept = (await listBackups()).map((backup) => backup.id);
-    expect(kept).toHaveLength(15);
-    expect(kept.at(-1)).toBe('2026-09-06T20-30-00Z');
-    expect([...state.objects.keys()].some((key) => key.includes('2026-09-05T'))).toBe(false);
+    expect(kept).toHaveLength(8);
+    expect(kept.at(-1)).toBe('2026-09-13T20-30-00Z');
+    expect([...state.objects.keys()].some((key) => key.includes('2026-09-12T'))).toBe(false);
+
+    // Each night that deleted a backup told the people who manage the settings: the CEO only.
+    const told = await Notification.find().sort({ _id: 1 }).lean();
+    expect(told).toHaveLength(12);
+    expect(told.every((item) => String(item.userId) === String(ceo._id))).toBe(true);
+    expect(told[0]).toMatchObject({
+      type: 'backup_deleted',
+      title: 'An old database backup was deleted',
+      body: 'Older than 7 days: 2 Sept 2026',
+      link: '/settings?section=backups',
+    });
 
     // A backup after a long gap: everything is old, yet the newest 7 stay.
     const late = await createBackup({ now: new Date('2027-03-01T20:30:00Z') });
-    expect(late.deleted).toHaveLength(9);
+    expect(late.deleted).toHaveLength(2);
     expect(await listBackups()).toHaveLength(7);
+    expect((await Notification.findOne().sort({ _id: -1 }).lean()).title).toBe(
+      '2 old database backups were deleted',
+    );
   });
 
   it('the background job makes a backup, and is safe to run twice', async () => {

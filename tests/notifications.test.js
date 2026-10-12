@@ -118,6 +118,8 @@ describe('preferences', () => {
       ['lead_received', true],
       // Added with Plivo calling (2026-10-10): a call to me that nobody picked up.
       ['call_missed', true],
+      // Added with the 7-day backup rule (2026-10-12).
+      ['backup_deleted', true],
     ]);
 
     await asAgent.patch('/api/notifications/preferences').send({ enabled: false });
