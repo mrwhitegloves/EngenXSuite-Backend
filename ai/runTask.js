@@ -3,7 +3,9 @@ import { createAppError } from '../lib/errors.js';
 import { AiRun } from '../models/aiRun.model.js';
 import { checkBudget, recordUsage, usdToPaise } from './budget.js';
 import { callModel, isAiConfigured } from './client.js';
+import { AI_MODEL_CLASS_KEYS } from './config.js';
 import { redact } from './redact.js';
+import { getAiSettings } from './settings.js';
 
 // THE way to use a language model. Every AI feature is a "task": a small function that builds a
 // prompt from CRM records and calls runAiTask() with the shape (a Zod schema) the answer must have.
@@ -82,6 +84,13 @@ export async function runAiTask({
     throw createAppError('AI_LIMIT_REACHED', 429, budget.message);
   }
 
+  if (!AI_MODEL_CLASS_KEYS.includes(modelClass)) {
+    throw new Error(`Unknown AI model class: ${modelClass}`);
+  }
+  // Which model does this class of work is a setting (Settings → AI).
+  const choice = (await getAiSettings()).models[modelClass];
+  const models = [choice.model, choice.fallback].filter(Boolean);
+
   const prompt = { system: redact(system), user: redact(user) };
   let retryOf;
   let hint = '';
@@ -90,7 +99,7 @@ export async function runAiTask({
     let answer;
     try {
       answer = await callModel({
-        modelClass,
+        models,
         system: prompt.system,
         user: prompt.user + hint,
         maxTokens,

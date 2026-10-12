@@ -1,35 +1,22 @@
 import { logger } from '../infra/logger.js';
 import { AiUsageDaily, AiUsageMonthly } from '../models/aiUsage.model.js';
-import { Settings } from '../models/settings.model.js';
 import { notifySettingsManagers } from '../services/notifications.service.js';
-import {
-  AI_ALERT_SHARE,
-  AI_DEFAULT_DAILY_RUNS_PER_USER,
-  AI_DEFAULT_MONTHLY_CAP_PAISE,
-  AI_USD_TO_INR,
-} from './config.js';
+import { AI_USD_TO_INR } from './config.js';
+import { getAiSettings } from './settings.js';
 
 // The two locks on AI spending: a monthly cap in rupees for the whole company, and a number of
 // runs per person per day. Checked before every model call and counted after it, by
 // runAiTask(). When a lock is closed the AI refuses with a clear message; the CRM keeps working.
+// The cap, the daily number and the alert percentage are settings (Settings → AI).
 
 // India time is UTC + 5:30, the whole year.
 const INDIA_OFFSET_MS = 5.5 * 60 * 60 * 1000;
-const indiaDay = (moment) =>
+export const indiaDay = (moment) =>
   new Date(moment.getTime() + INDIA_OFFSET_MS).toISOString().slice(0, 10);
-const indiaMonth = (moment) => indiaDay(moment).slice(0, 7);
+export const indiaMonth = (moment) => indiaDay(moment).slice(0, 7);
 
 /** US dollars (the provider's cost figure) → paise, rounded up so spend is never undercounted. */
 export const usdToPaise = (usd) => Math.ceil(Number(usd || 0) * AI_USD_TO_INR * 100);
-
-/** The limits in force: the settings, or the starting values until someone saves. */
-export async function getAiLimits() {
-  const settings = await Settings.findOne({ key: 'app' }).select('ai').lean();
-  return {
-    monthlyCapPaise: settings?.ai?.monthlyCapPaise ?? AI_DEFAULT_MONTHLY_CAP_PAISE,
-    dailyRunsPerUser: settings?.ai?.dailyRunsPerUser ?? AI_DEFAULT_DAILY_RUNS_PER_USER,
-  };
-}
 
 /**
  * May one more AI run start?
@@ -38,7 +25,7 @@ export async function getAiLimits() {
  *                   { allowed: false, status: 'blocked_cap' | 'blocked_limit', message: string }>}
  */
 export async function checkBudget({ userId, now = new Date() } = {}) {
-  const limits = await getAiLimits();
+  const limits = await getAiSettings();
   const month = await AiUsageMonthly.findOne({ month: indiaMonth(now) })
     .select('totalCostPaise')
     .lean();
@@ -66,11 +53,11 @@ export async function checkBudget({ userId, now = new Date() } = {}) {
 
 /**
  * Count one finished model call against the two locks, and tell the people who manage the
- * settings once when 80% of the cap is used and once when all of it is.
+ * settings once when the alert percentage of the cap is used and once when all of it is.
  * @param {{ task: string, costPaise: number, userId?: unknown, now?: Date }} run
  */
 export async function recordUsage({ task, costPaise, userId, now = new Date() }) {
-  const limits = await getAiLimits();
+  const limits = await getAiSettings();
   const month = indiaMonth(now);
   const usage = await AiUsageMonthly.findOneAndUpdate(
     { month },
@@ -99,12 +86,13 @@ export async function recordUsage({ task, costPaise, userId, now = new Date() })
       field: 'capReachedAt',
       reached: usage.totalCostPaise >= limits.monthlyCapPaise,
       title: 'The AI budget for this month is used up',
-      body: `${rupees(limits.monthlyCapPaise)} is spent. AI features are paused until next month, or until the cap is raised.`,
+      body: `${rupees(limits.monthlyCapPaise)} is spent. AI features are paused until next month, or until the budget is raised.`,
     },
     {
+      // (The field kept its first name; the percentage is a setting now.)
       field: 'alert80SentAt',
-      reached: usage.totalCostPaise >= limits.monthlyCapPaise * AI_ALERT_SHARE,
-      title: 'The AI budget for this month is 80% used',
+      reached: usage.totalCostPaise >= (limits.monthlyCapPaise * limits.alertPercent) / 100,
+      title: `The AI budget for this month is ${limits.alertPercent}% used`,
       body: `${rupees(usage.totalCostPaise)} of ${rupees(limits.monthlyCapPaise)} is spent.`,
     },
   ];
@@ -121,7 +109,8 @@ export async function recordUsage({ task, costPaise, userId, now = new Date() })
       title: step.title,
       body: step.body,
       link: '/settings?section=ai',
-      dedupeKey: `ai-budget:${month}:${step.field}`,
+      // Per budget and warning level: after a change in Settings the warning can come again.
+      dedupeKey: `ai-budget:${month}:${step.field}:${limits.monthlyCapPaise}:${limits.alertPercent}`,
     }).catch((error) => logger.warn({ err: error }, 'Could not tell about the AI budget'));
   }
 }

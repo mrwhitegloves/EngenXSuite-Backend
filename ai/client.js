@@ -1,6 +1,6 @@
 import { env } from '../config/env.js';
 import { createAppError } from '../lib/errors.js';
-import { AI_API_URL, AI_DEFAULT_MAX_TOKENS, AI_MODELS, AI_TIMEOUT_MS } from './config.js';
+import { AI_API_URL, AI_DEFAULT_MAX_TOKENS, AI_TIMEOUT_MS } from './config.js';
 
 // The only file that talks to a language model (through OpenRouter). Nothing outside
 // server/ai/ may import it: every model call goes through runAiTask() in runTask.js, which
@@ -12,15 +12,14 @@ export function isAiConfigured() {
 
 /**
  * One model call that must answer with JSON.
- * @param {{ modelClass: 'fast' | 'balanced' | 'strong', system: string, user: string,
- *           maxTokens?: number }} request
+ * @param {{ models: string[], system: string, user: string, maxTokens?: number }} request
+ *        models: the model to use first, then the ones tried when it is not available
  * @returns {Promise<{ text: string, model: string, promptTokens: number,
  *                     completionTokens: number, costUsd: number, latencyMs: number }>}
  */
-export async function callModel({ modelClass, system, user, maxTokens = AI_DEFAULT_MAX_TOKENS }) {
+export async function callModel({ models, system, user, maxTokens = AI_DEFAULT_MAX_TOKENS }) {
   if (!isAiConfigured()) throw createAppError('AI_NOT_CONFIGURED', 503, 'AI is not set up yet.');
-  const choice = AI_MODELS[modelClass];
-  if (!choice) throw new Error(`Unknown AI model class: ${modelClass}`);
+  if (!models?.length) throw new Error('callModel needs at least one model');
 
   const startedAt = Date.now();
   let response;
@@ -33,7 +32,7 @@ export async function callModel({ modelClass, system, user, maxTokens = AI_DEFAU
       },
       body: JSON.stringify({
         // The first model that is available answers; the others are fallbacks.
-        models: [choice.model, ...choice.fallbacks],
+        models,
         messages: [
           { role: 'system', content: system },
           { role: 'user', content: user },
@@ -62,7 +61,7 @@ export async function callModel({ modelClass, system, user, maxTokens = AI_DEFAU
   }
   return {
     text,
-    model: String(body.model ?? choice.model),
+    model: String(body.model ?? models[0]),
     promptTokens: Number(body.usage?.prompt_tokens ?? 0),
     completionTokens: Number(body.usage?.completion_tokens ?? 0),
     costUsd: Number(body.usage?.cost ?? 0),

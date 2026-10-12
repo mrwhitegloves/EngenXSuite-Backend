@@ -46,6 +46,10 @@ const settingsSchema = new mongoose.Schema(
       monthlyCapPaise: { type: Number, min: 0 },
       // How many AI runs one person may start in a day.
       dailyRunsPerUser: { type: Number, min: 0 },
+      // The people who manage the settings are warned when this much of the budget is used.
+      alertPercent: { type: Number, min: 1, max: 99 },
+      // Per class of work (fast, balanced, strong): { model, fallback }, ids from ai/config.js.
+      models: { type: mongoose.Schema.Types.Mixed },
     },
     backups: {
       // When backups older than the keep time are deleted, India time, "HH:mm".

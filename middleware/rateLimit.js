@@ -115,6 +115,18 @@ export function createExportLimiter({ limit = 10, windowMs = 60 * MINUTE_MS, ski
   });
 }
 
+/** Asking the AI for a new answer: 20 per minute per signed-in user (Section 75). */
+export function createAiLimiter({ limit = 20, windowMs = MINUTE_MS, skip } = {}) {
+  return createLimiter({
+    limit,
+    windowMs,
+    skip,
+    name: 'ai',
+    keyGenerator: (req) => `user:${req.user?._id ?? ipKeyGenerator(req.ip)}`,
+    message: 'Too many AI requests. Please wait a minute and try again.',
+  });
+}
+
 /** Viewing passwords on the Users screen: 60 per hour per signed-in user. */
 export function createPasswordViewLimiter({ limit = 60, windowMs = 60 * MINUTE_MS, skip } = {}) {
   return createLimiter({
