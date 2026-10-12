@@ -13,6 +13,12 @@ export const BACKUP_TIMEZONE = 'Asia/Kolkata';
 // newest ones are always kept, so a long stretch of failed nights can never delete the last
 // good backup. The people who manage the settings are told when backups are deleted.
 export const BACKUP_KEEP_DAYS = 7;
+// When old backups are deleted (India time) and how long before that the people who manage the
+// settings are told. These are only the starting values: both are edited in Settings → Backups.
+// 0 minutes = told at the moment the backups are deleted.
+export const BACKUP_DELETE_TIME = '02:30';
+export const BACKUP_NOTIFY_MINUTES_BEFORE = 30;
+export const BACKUP_NOTIFY_MINUTES_MAX = 720;
 export const BACKUP_KEEP_AT_LEAST = 7;
 
 // The Backups screen warns when the newest backup is older than this.

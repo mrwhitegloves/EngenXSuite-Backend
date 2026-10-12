@@ -3,6 +3,7 @@ import { sendCreated, sendList, sendOk } from '../lib/respond.js';
 import {
   answerConnect,
   answerConsent,
+  answerDialResult,
   answerInbound,
   getCallSettings,
   getRecordingLink,
@@ -66,7 +67,13 @@ export async function respondConsent(req, res) {
   sendXml(res, await answerConsent());
 }
 
-// POST /api/webhooks/plivo/dial-result and /recording: noted; nothing more for Plivo to do.
+// POST /api/webhooks/plivo/dial-result?call=<id>&step=1|2: the rung phone ended. For an inbound
+// call nobody picked up, the answer may be "now ring the next person".
+export async function respondDialResult(req, res) {
+  sendXml(res, await answerDialResult(req.query.call, req.query.step, req.body ?? {}));
+}
+
+// POST /api/webhooks/plivo/recording: noted; nothing more for Plivo to do.
 export function respondNothing(req, res) {
   sendXml(res, emptyXml());
 }

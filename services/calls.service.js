@@ -53,6 +53,9 @@ const FEATURE = 'calls';
 const OWNERSHIP = { ownerField: 'userId' };
 const NOT_DELETED = { deletedAt: null };
 const CALL_BACK_DUE_MS = 30 * 60 * 1000;
+// Inbound: how long the first person's phone rings before the next person is tried.
+const FIRST_RING_SEC = 25;
+const SECOND_RING_SEC = 30;
 const DEFAULT_CONSENT = 'This call may be recorded for quality and training.';
 const NOBODY_AVAILABLE =
   'Thank you for calling. Nobody is available right now. We will call you back shortly.';
@@ -151,7 +154,7 @@ async function toViews(calls, actor) {
     ),
   ];
   const [users, contacts] = await Promise.all([
-    User.find({ _id: { $in: ids('userId') } })
+    User.find({ _id: { $in: [...ids('userId'), ...ids('answeredByUserId')] } })
       .select('name')
       .lean(),
     Contact.find({ _id: { $in: ids('contactId') } })
@@ -177,6 +180,11 @@ async function toViews(calls, actor) {
       cost: call.cost ?? null,
       outcome: call.outcome ?? null,
       user: named(users, call.userId),
+      // Inbound: set when someone else picked up because the first person did not.
+      answeredBy:
+        call.answeredByUserId && String(call.answeredByUserId) !== String(call.userId)
+          ? named(users, call.answeredByUserId)
+          : null,
       contact: named(contacts, call.contactId),
       opportunityId: call.opportunityId ? String(call.opportunityId) : null,
       hasRecording: Boolean(call.recordingUrl),
@@ -486,9 +494,26 @@ async function matchCaller(fromNumber) {
   ];
   for (const userId of candidates) {
     const phone = await phoneOfUser(userId);
-    if (phone) return { contact, lead, userId, phone };
+    if (phone) {
+      const fallbackUserId = await fallbackFor(userId, settings.defaultInboundUserId);
+      return { contact, lead, userId, phone, fallbackUserId };
+    }
   }
   return { contact, lead, userId: candidates.find(Boolean) ?? null, phone: null };
+}
+
+/**
+ * Who is rung when the first person does not pick up: the default person from Settings → Calls,
+ * else the first person's manager. Someone else than the first person, with a phone; else nobody.
+ */
+async function fallbackFor(firstUserId, defaultUserId) {
+  const first = await User.findById(firstUserId).select('managerId').lean();
+  for (const userId of [defaultUserId, first?.managerId]) {
+    if (userId && String(userId) !== String(firstUserId) && (await phoneOfUser(userId))) {
+      return userId;
+    }
+  }
+  return null;
 }
 
 /**
@@ -499,7 +524,7 @@ async function matchCaller(fromNumber) {
 export async function answerInbound(params) {
   if (!params.CallUUID) return speakXml(NOBODY_AVAILABLE);
   const fromNumber = normalizePhone(`+${String(params.From ?? '').replace(/\D/g, '')}`);
-  const { contact, lead, userId, phone } = await matchCaller(fromNumber);
+  const { contact, lead, userId, phone, fallbackUserId } = await matchCaller(fromNumber);
 
   // Plivo may ask twice (a retry): the same call is written once.
   const call = await Call.findOneAndUpdate(
@@ -512,6 +537,7 @@ export async function answerInbound(params) {
         status: 'ringing',
         startedAt: new Date(),
         userId: userId ?? undefined,
+        fallbackUserId: fallbackUserId ?? undefined,
         contactId: contact?._id,
         accountId: contact?.accountId,
         opportunityId: lead?._id,
@@ -523,7 +549,33 @@ export async function answerInbound(params) {
   if (!phone) return speakXml(NOBODY_AVAILABLE);
   return dialXml({
     number: phone,
-    resultUrl: plivoUrl('dial-result', { call: call._id }),
+    // With someone to try next, the first phone rings a shorter time.
+    ...(call.fallbackUserId ? { timeoutSec: FIRST_RING_SEC } : {}),
+    resultUrl: plivoUrl('dial-result', { call: call._id, step: 1 }),
+    ...(await recordingOptions(call._id)),
+  });
+}
+
+/** Inbound, first ring over and nobody talked: the phone of the next person, or null. */
+async function nextPhone(call, step, params) {
+  if (call?.direction !== 'inbound' || String(step) !== '1') return null;
+  if (params.DialStatus === 'completed' || !call.fallbackUserId) return null;
+  return phoneOfUser(call.fallbackUserId);
+}
+
+/**
+ * A rung phone has ended. For an inbound call that the first person did not pick up, Plivo is
+ * told to ring the next person; in every other case there is nothing more to do.
+ * (Asking twice gives the same answer: nothing is written here.)
+ */
+export async function answerDialResult(callId, step, params) {
+  const call = mongooseId(callId) ? await Call.findById(callId).lean() : null;
+  const phone = await nextPhone(call, step, params);
+  if (!phone) return emptyXml();
+  return dialXml({
+    number: phone,
+    timeoutSec: SECOND_RING_SEC,
+    resultUrl: plivoUrl('dial-result', { call: call._id, step: 2 }),
     ...(await recordingOptions(call._id)),
   });
 }
@@ -657,7 +709,7 @@ async function storeRecording(call, params) {
  * @param {{ payload: { kind: string, call?: string, params: object } }} event  A stored event
  */
 async function processPlivoEvent(event) {
-  const { kind, call: callId, params = {} } = event.payload ?? {};
+  const { kind, call: callId, step, params = {} } = event.payload ?? {};
   const call = mongooseId(callId)
     ? await Call.findById(callId).lean()
     : params.CallUUID
@@ -672,7 +724,25 @@ async function processPlivoEvent(event) {
       { $set: { status: 'in_progress', answeredAt: new Date() } },
     );
   } else if (kind === 'dial-result') {
-    await Call.updateOne({ _id: call._id }, { $set: { 'plivo.dial': params } });
+    if (await nextPhone(call, step, params)) {
+      // The first person did not pick up and the next one is being rung: not the result yet.
+      await Call.updateOne({ _id: call._id }, { $set: { 'plivo.firstDial': params } });
+      announce();
+      return;
+    }
+    const talked = params.DialStatus === 'completed';
+    const answeredBy = String(step) === '2' ? call.fallbackUserId : call.userId;
+    await Call.updateOne(
+      { _id: call._id },
+      {
+        $set: {
+          'plivo.dial': params,
+          ...(call.direction === 'inbound' && talked && answeredBy
+            ? { answeredByUserId: answeredBy }
+            : {}),
+        },
+      },
+    );
     // Usually the hang-up comes after this; when it came first, the result is worked out again.
     if (call.endedAt) await finishCall(call._id);
   } else if (kind === 'hangup') {

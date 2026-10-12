@@ -4,6 +4,7 @@
 export const JOB_NAMES = {
   systemPing: 'system.ping',
   databaseBackup: 'backup.database',
+  backupCleanup: 'backup.cleanup',
   webhookProcess: 'webhook.process',
   webhookSweep: 'webhook.sweep',
   importRun: 'import.run',

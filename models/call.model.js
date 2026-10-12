@@ -36,6 +36,9 @@ const callSchema = new mongoose.Schema(
     status: { type: String, enum: CALL_STATUSES, required: true, default: 'initiated' },
     startedAt: { type: Date },
     answeredAt: { type: Date },
+    // Inbound: who is rung next when the first person does not pick up, and who picked up.
+    fallbackUserId: { type: ObjectId, ref: 'User' },
+    answeredByUserId: { type: ObjectId, ref: 'User' },
     endedAt: { type: Date },
     // How long the two sides talked.
     durationSec: { type: Number, min: 0 },

@@ -41,7 +41,8 @@ const { Notification } = await import('../models/notification.model.js');
 const { Role } = await import('../models/role.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed } = await import('../seeds/seed.js');
-const { createBackup, listBackups, restoreBackup } = await import('../services/backup.service.js');
+const { createBackup, listBackups, restoreBackup, runBackupCleanup } =
+  await import('../services/backup.service.js');
 const { JOB_HANDLERS, JOB_NAMES } = await import('../jobs/index.js');
 const { clearTestDb, startTestDb, stopTestDb } = await import('./helpers/testDb.js');
 
@@ -196,34 +197,73 @@ describe('database backup and restore', () => {
     ).rejects.toMatchObject({ status: 404 });
   });
 
-  // The rule was 14 days until 2026-10-12 (founder decision: keep the last 7 days).
-  it('deletes backups older than 7 days but always keeps the newest 7, and tells the CEO', async () => {
-    const day = (number) => new Date(Date.UTC(2026, 8, number, 20, 30));
-    for (let number = 1; number <= 20; number += 1) await createBackup({ now: day(number) });
-    // On day 20, days 1 to 12 are older than 7 days.
-    const kept = (await listBackups()).map((backup) => backup.id);
-    expect(kept).toHaveLength(8);
-    expect(kept.at(-1)).toBe('2026-09-13T20-30-00Z');
-    expect([...state.objects.keys()].some((key) => key.includes('2026-09-12T'))).toBe(false);
+  // Until 2026-10-12 a backup deleted the old ones itself (first after 14 days, then 7). Founder
+  // decision: a clean-up at its own time, set in Settings → Backups, with a warning before it.
+  it('the clean-up warns the CEO, then deletes backups older than 7 days, keeping the newest 7', async () => {
+    // 20 nights; each backup is made at 02:00 India time.
+    const night = (number) => new Date(Date.UTC(2026, 8, number, 20, 30));
+    for (let number = 1; number <= 20; number += 1) await createBackup({ now: night(number) });
+    expect(await listBackups()).toHaveLength(20); // making a backup deletes nothing
 
-    // Each night that deleted a backup told the people who manage the settings: the CEO only.
-    const told = await Notification.find().sort({ _id: 1 }).lean();
-    expect(told).toHaveLength(12);
-    expect(told.every((item) => String(item.userId) === String(ceo._id))).toBe(true);
-    expect(told[0]).toMatchObject({
-      type: 'backup_deleted',
-      title: 'An old database backup was deleted',
-      body: 'Older than 7 days: 2 Sept 2026',
-      link: '/settings?section=backups',
+    // Starting values: delete at 02:30, tell 30 minutes before. At 01:59 nothing happens.
+    expect(await runBackupCleanup({ now: new Date('2026-09-20T20:29:00Z') })).toEqual({
+      warned: [],
+      deleted: [],
     });
+    const warned = await runBackupCleanup({ now: new Date('2026-09-20T20:30:00Z') }); // 02:00
+    expect(warned.warned).toHaveLength(13);
+    expect(warned.deleted).toEqual([]);
+    await runBackupCleanup({ now: new Date('2026-09-20T20:31:00Z') }); // the next minute: not again
+    const told = await Notification.find().lean();
+    expect(told).toHaveLength(1); // the people who manage the settings: the CEO only
+    expect(String(told[0].userId)).toBe(String(ceo._id));
+    expect(told[0]).toMatchObject({ type: 'backup_deleted', link: '/settings?section=backups' });
+    expect(told[0].title).toMatch(/^13 old database backups will be deleted at 2:30\s?am$/i);
+    expect(await listBackups()).toHaveLength(20);
 
-    // A backup after a long gap: everything is old, yet the newest 7 stay.
-    const late = await createBackup({ now: new Date('2027-03-01T20:30:00Z') });
-    expect(late.deleted).toHaveLength(2);
-    expect(await listBackups()).toHaveLength(7);
-    expect((await Notification.findOne().sort({ _id: -1 }).lean()).title).toBe(
-      '2 old database backups were deleted',
+    const cleaned = await runBackupCleanup({ now: new Date('2026-09-20T21:00:00Z') }); // 02:30
+    expect(cleaned.deleted).toHaveLength(13);
+    const kept = (await listBackups()).map((backup) => backup.id);
+    expect(kept).toHaveLength(7);
+    expect(kept.at(-1)).toBe('2026-09-14T20-30-00Z');
+    expect([...state.objects.keys()].some((key) => key.includes('2026-09-13T'))).toBe(false);
+    // Once per day, and no second notification (they were told before).
+    expect((await runBackupCleanup({ now: new Date('2026-09-20T21:01:00Z') })).deleted).toEqual([]);
+    expect(await Notification.countDocuments()).toBe(1);
+  });
+
+  it('the clean-up times are a setting: another time, and "tell me when they are deleted"', async () => {
+    const asCeo = await signedInAs(ceo);
+    const asManager = await signedInAs(manager);
+    expect((await asCeo.get('/api/backups')).body.data.cleanup).toEqual({
+      deleteTime: '02:30',
+      notifyMinutesBefore: 30,
+      keepDays: 7,
+    });
+    const saved = await asCeo
+      .patch('/api/backups/cleanup')
+      .send({ deleteTime: '23:00', notifyMinutesBefore: 0 });
+    expect(saved.body.data).toEqual({ deleteTime: '23:00', notifyMinutesBefore: 0, keepDays: 7 });
+    expect((await asCeo.patch('/api/backups/cleanup').send({ deleteTime: '25:00' })).status).toBe(
+      400,
     );
+    expect(
+      (await asCeo.patch('/api/backups/cleanup').send({ notifyMinutesBefore: -5 })).status,
+    ).toBe(400);
+    expect(
+      (await asManager.patch('/api/backups/cleanup').send({ deleteTime: '01:00' })).status,
+    ).toBe(403);
+
+    for (let number = 1; number <= 8; number += 1) {
+      await createBackup({ now: new Date(Date.UTC(2026, 8, number, 20, 30)) });
+    }
+    // Long after: everything is old, yet the newest 7 stay. Nothing before 23:00 India time.
+    expect((await runBackupCleanup({ now: new Date('2027-03-01T17:00:00Z') })).deleted).toEqual([]);
+    expect(await Notification.countDocuments()).toBe(0);
+    const cleaned = await runBackupCleanup({ now: new Date('2027-03-01T17:30:00Z') });
+    expect(cleaned.deleted).toEqual(['2026-09-01T20-30-00Z']);
+    expect(await listBackups()).toHaveLength(7);
+    expect((await Notification.findOne().lean()).title).toBe('An old database backup was deleted');
   });
 
   it('the background job makes a backup, and is safe to run twice', async () => {

@@ -18,6 +18,15 @@ const SCHEDULES = [
     isEnabled: () => isStorageConfigured(),
   },
   {
+    // Every minute: is it time to warn about, or to delete, old backups? (The times are a setting.)
+    id: 'backup-cleanup',
+    queue: 'integrations',
+    cron: '* * * * *',
+    timezone: BACKUP_TIMEZONE,
+    jobName: JOB_NAMES.backupCleanup,
+    isEnabled: () => isStorageConfigured(),
+  },
+  {
     // Every 5 minutes: queue webhook events that were stored while the queue was not available.
     id: 'webhook-sweep',
     queue: 'webhooks',

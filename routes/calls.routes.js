@@ -8,6 +8,7 @@ import {
   postCall,
   respondConnect,
   respondConsent,
+  respondDialResult,
   respondInbound,
   respondNothing,
 } from '../controllers/calls.controller.js';
@@ -33,9 +34,16 @@ function plivoWebhook(kind, respond) {
     // One event per call and kind (a recording has its own id); a repeat is recognised.
     getEventId: (req) => {
       const call = req.body?.CallUUID ?? req.query.call;
-      return call ? `${call}:${kind}:${req.body?.RecordingID ?? ''}` : undefined;
+      return call
+        ? `${call}:${kind}:${req.body?.RecordingID ?? ''}${req.query.step ?? ''}`
+        : undefined;
     },
-    getPayload: (req) => ({ kind, call: req.query.call, params: req.body ?? {} }),
+    getPayload: (req) => ({
+      kind,
+      call: req.query.call,
+      step: req.query.step,
+      params: req.body ?? {},
+    }),
     respond,
   });
 }
@@ -44,7 +52,7 @@ export const plivoWebhooksRouter = Router();
 plivoWebhooksRouter.post('/connect', plivoWebhook('connect', respondConnect));
 plivoWebhooksRouter.post('/inbound', plivoWebhook('inbound', respondInbound));
 plivoWebhooksRouter.post('/consent', plivoWebhook('consent', respondConsent));
-plivoWebhooksRouter.post('/dial-result', plivoWebhook('dial-result', respondNothing));
+plivoWebhooksRouter.post('/dial-result', plivoWebhook('dial-result', respondDialResult));
 plivoWebhooksRouter.post('/recording', plivoWebhook('recording', respondNothing));
 // The end of a call: nothing to answer but "received".
 plivoWebhooksRouter.post('/hangup', plivoWebhook('hangup'));

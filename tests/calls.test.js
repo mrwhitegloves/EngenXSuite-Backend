@@ -546,3 +546,85 @@ describe('recording without the announcement, the list of every call, and re-lin
     expect((await asCeo.patch(`/api/calls/${unknown[0].id}`).send({})).status).toBe(400);
   });
 });
+
+describe('inbound: the next person when the first does not pick up', () => {
+  const ring = (uuid) =>
+    hook('inbound', { CallUUID: uuid, From: '919876543210', To: '918035000000' });
+  const callOf = (uuid) => Call.findOne({ plivoCallUuid: uuid }).lean();
+
+  it('rings the default person after the owner; whoever picks up is written down', async () => {
+    const ceo = await User.findOne({ email: 'ceo@engenx.in' }).lean();
+    await asCeo.patch('/api/settings/calls').send({ defaultInboundUserId: String(ceo._id) });
+
+    // The owner (the agent) is rung first, for a shorter time.
+    const first = await ring('inbound-a');
+    expect(first.text).toContain('<Number>919000000002</Number>');
+    expect(first.text).toContain('timeout="25"');
+    const call = await callOf('inbound-a');
+    expect(String(call.fallbackUserId)).toBe(String(ceo._id));
+
+    // Nobody picks up: Plivo is told to ring the default person. The call is not over yet.
+    const next = await hook(
+      'dial-result',
+      { CallUUID: 'inbound-a', DialStatus: 'no-answer' },
+      { call: `${call._id}&step=1` },
+    );
+    expect(next.text).toContain('<Number>919000000001</Number>');
+    expect(next.text).toContain('step=2');
+    expect((await callOf('inbound-a')).status).toBe('ringing');
+
+    await hook(
+      'dial-result',
+      { CallUUID: 'inbound-a', DialStatus: 'completed', DialBLegDuration: '30' },
+      { call: `${call._id}&step=2` },
+    );
+    await hook('hangup', { CallUUID: 'inbound-a', CallStatus: 'completed' });
+    const ended = await callOf('inbound-a');
+    expect(ended).toMatchObject({ status: 'completed', durationSec: 30 });
+    expect(String(ended.answeredByUserId)).toBe(String(ceo._id));
+    expect(String(ended.userId)).toBe(String(agent._id)); // still the owner's customer
+    expect(await Notification.countDocuments()).toBe(0);
+    const listed = (await asAgent.get(`/api/calls?opportunityId=${leadId}`)).body.data[0];
+    expect(listed).toMatchObject({
+      user: { name: 'Asha Agent' },
+      answeredBy: { name: 'Kunal CEO' },
+    });
+
+    // Both do not pick up: a missed call for the owner, once.
+    await ring('inbound-b');
+    const second = await callOf('inbound-b');
+    await hook(
+      'dial-result',
+      { CallUUID: 'inbound-b', DialStatus: 'no-answer' },
+      { call: `${second._id}&step=1` },
+    );
+    await hook(
+      'dial-result',
+      { CallUUID: 'inbound-b', DialStatus: 'no-answer' },
+      { call: `${second._id}&step=2` },
+    );
+    await hook('hangup', { CallUUID: 'inbound-b', CallStatus: 'completed' });
+    expect((await callOf('inbound-b')).status).toBe('missed');
+    const told = await Notification.find().lean();
+    expect(told).toHaveLength(1);
+    expect(String(told[0].userId)).toBe(String(agent._id));
+  });
+
+  it('without a default person the owner’s manager is next; with neither, nobody', async () => {
+    const plain = await ring('inbound-c');
+    expect(plain.text).not.toContain('timeout="25"');
+    const call = await callOf('inbound-c');
+    expect(call.fallbackUserId).toBeUndefined();
+    const nothing = await hook(
+      'dial-result',
+      { CallUUID: 'inbound-c', DialStatus: 'no-answer' },
+      { call: `${call._id}&step=1` },
+    );
+    expect(nothing.text).not.toContain('<Dial');
+
+    const ceo = await User.findOne({ email: 'ceo@engenx.in' }).lean();
+    await User.updateOne({ _id: agent._id }, { $set: { managerId: ceo._id } });
+    await ring('inbound-d');
+    expect(String((await callOf('inbound-d')).fallbackUserId)).toBe(String(ceo._id));
+  });
+});

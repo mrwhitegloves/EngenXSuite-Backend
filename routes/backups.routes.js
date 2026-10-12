@@ -1,5 +1,7 @@
 import { Router } from 'express';
-import { getBackups, postBackup } from '../controllers/backups.controller.js';
+import { getBackups, patchCleanup, postBackup } from '../controllers/backups.controller.js';
+import { validate } from '../middleware/validate.js';
+import { backupCleanupBody } from '../validation/backups.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
 
@@ -12,5 +14,11 @@ router.use(requireAuth);
 
 router.get('/', authorize('settings', 'view'), getBackups);
 router.post('/', authorize('settings', 'edit'), postBackup);
+router.patch(
+  '/cleanup',
+  authorize('settings', 'edit'),
+  validate({ body: backupCleanupBody }),
+  patchCleanup,
+);
 
 export default router;

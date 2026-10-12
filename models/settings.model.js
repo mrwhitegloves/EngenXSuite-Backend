@@ -41,6 +41,15 @@ const settingsSchema = new mongoose.Schema(
       // Who gets an inbound call from a number nobody knows, or whose owner has no phone.
       defaultInboundUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     },
+    backups: {
+      // When backups older than the keep time are deleted, India time, "HH:mm".
+      deleteTime: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/ },
+      // How many minutes before that the people who manage the settings are told. 0 = at that moment.
+      notifyMinutesBefore: { type: Number, min: 0 },
+      // The India day ("2026-10-12") the clean-up last ran for, and the day it last warned for.
+      lastCleanupDay: { type: String },
+      lastWarningDay: { type: String },
+    },
     leadAssignment: {
       mode: { type: String, enum: ASSIGNMENT_MODES, default: 'round_robin_all' },
       // The people of "round robin: chosen people" and "fewest open leads".

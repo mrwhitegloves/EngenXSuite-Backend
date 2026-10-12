@@ -2,9 +2,11 @@ import { gunzipSync, gzipSync } from 'node:zlib';
 import mongoose from 'mongoose';
 import {
   BACKUP_CHUNK_DOCUMENTS,
+  BACKUP_DELETE_TIME,
   BACKUP_INDEX_KEY,
   BACKUP_KEEP_AT_LEAST,
   BACKUP_KEEP_DAYS,
+  BACKUP_NOTIFY_MINUTES_BEFORE,
   BACKUP_PREFIX,
   BACKUP_SKIP_COLLECTIONS,
   BACKUP_STALE_DAYS,
@@ -13,8 +15,10 @@ import { JOB_NAMES } from '../constants/jobNames.js';
 import { logger } from '../infra/logger.js';
 import { enqueue } from '../infra/queues.js';
 import { deleteObject, isStorageConfigured, readObject, uploadObject } from '../infra/storage.js';
+import { writeAudit } from '../lib/audit.js';
 import { badRequest, conflict, createAppError, notFound } from '../lib/errors.js';
 import { Role } from '../models/role.model.js';
+import { Settings } from '../models/settings.model.js';
 import { User } from '../models/user.model.js';
 import { notify } from './notifications.service.js';
 
@@ -50,14 +54,52 @@ export async function listBackups() {
   return [...(index?.backups ?? [])].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
-/** What Settings → Backups shows: whether storage is set up, and the finished backups. */
+/** The clean-up times from Settings → Backups (the starting values until someone saves). */
+async function readCleanupSettings() {
+  const settings = await Settings.findOne({ key: 'app' }).select('backups').lean();
+  return {
+    deleteTime: settings?.backups?.deleteTime ?? BACKUP_DELETE_TIME,
+    notifyMinutesBefore: settings?.backups?.notifyMinutesBefore ?? BACKUP_NOTIFY_MINUTES_BEFORE,
+    lastCleanupDay: settings?.backups?.lastCleanupDay ?? null,
+    lastWarningDay: settings?.backups?.lastWarningDay ?? null,
+  };
+}
+
+/** What Settings → Backups shows: whether storage is set up, the backups, and the clean-up times. */
 export async function getBackupsOverview(now = new Date()) {
   if (!isStorageConfigured()) return { storage: 'not_configured', backups: [], isStale: false };
+  const { deleteTime, notifyMinutesBefore } = await readCleanupSettings();
   const backups = await listBackups();
   // Stale: the newest backup is older than two nights, so the nightly job is not working.
   const newest = backups[0];
   const isStale = Boolean(newest) && now - new Date(newest.createdAt) > BACKUP_STALE_DAYS * DAY_MS;
-  return { storage: 'configured', backups, isStale };
+  return {
+    storage: 'configured',
+    backups,
+    isStale,
+    cleanup: { deleteTime, notifyMinutesBefore, keepDays: BACKUP_KEEP_DAYS },
+  };
+}
+
+/**
+ * Change when old backups are deleted and how long before that people are told.
+ * @param {{ deleteTime?: string, notifyMinutesBefore?: number }} changes  Already validated
+ */
+export async function updateBackupCleanup(actor, changes, context = {}) {
+  const set = Object.fromEntries(
+    Object.entries(changes).map(([field, value]) => [`backups.${field}`, value]),
+  );
+  const settings = await Settings.findOneAndUpdate({ key: 'app' }, { $set: set }).lean();
+  if (!settings) throw badRequest('The settings are not set up yet. Run the seed first.');
+  await writeAudit({
+    actor,
+    action: 'settings.backups_updated',
+    entityType: 'settings',
+    entityId: settings._id,
+    newValue: changes,
+    requestId: context.requestId,
+  });
+  return (await getBackupsOverview()).cleanup;
 }
 
 /** Start a backup now, as a background job. Fails with a clear message when Redis is down. */
@@ -100,13 +142,19 @@ async function backUpCollection(db, name, backupId, chunkDocuments) {
   return { name, documents, bytes, files, indexes };
 }
 
+/** The backups that are too old at a moment; the newest ones are never among them. */
+function expiredAt(backups, moment) {
+  const newestFirst = [...backups].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const cutoff = new Date(moment.getTime() - BACKUP_KEEP_DAYS * DAY_MS).toISOString();
+  return newestFirst.filter(
+    (backup, position) => position >= BACKUP_KEEP_AT_LEAST && backup.createdAt < cutoff,
+  );
+}
+
 /** Delete old backups, always keeping the newest ones. Returns the ids that were deleted. */
 async function pruneBackups(backups, now) {
   const newestFirst = [...backups].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-  const cutoff = new Date(now.getTime() - BACKUP_KEEP_DAYS * DAY_MS).toISOString();
-  const expired = newestFirst.filter(
-    (backup, position) => position >= BACKUP_KEEP_AT_LEAST && backup.createdAt < cutoff,
-  );
+  const expired = expiredAt(backups, now);
 
   for (const backup of expired) {
     const manifest = await readJson(manifestKey(backup.id));
@@ -128,12 +176,16 @@ const formatDay = (value) =>
     new Date(value),
   );
 
+const formatTime = (value) =>
+  new Intl.DateTimeFormat('en-IN', { timeStyle: 'short', timeZone: 'Asia/Kolkata' }).format(value);
+
 /**
  * Tell the people who manage the settings (by default only the CEO) that old backups were
- * deleted. Decided from the permissions, not from a role's name. Never stops a backup.
+ * deleted, or will be at `deleteAt`. Decided from the permissions, not from a role's name.
  * @param {{ id: string, createdAt: string }[]} deleted
+ * @param {{ deleteAt?: Date }} [options]  deleteAt: set for the warning before the deletion
  */
-async function tellAboutDeletedBackups(deleted) {
+async function tellAboutDeletedBackups(deleted, { deleteAt } = {}) {
   if (deleted.length === 0) return;
   const roles = await Role.find({
     grants: { $elemMatch: { feature: 'settings', action: 'edit', scope: 'all' } },
@@ -147,10 +199,11 @@ async function tellAboutDeletedBackups(deleted) {
     .select('_id')
     .lean();
   const days = deleted.map((backup) => formatDay(backup.createdAt));
-  const title =
-    deleted.length === 1
-      ? 'An old database backup was deleted'
-      : `${deleted.length} old database backups were deleted`;
+  const what =
+    deleted.length === 1 ? 'An old database backup' : `${deleted.length} old database backups`;
+  const title = deleteAt
+    ? `${what} will be deleted at ${formatTime(deleteAt)}`
+    : `${what} ${deleted.length === 1 ? 'was' : 'were'} deleted`;
   for (const user of users) {
     await notify({
       userId: user._id,
@@ -158,7 +211,7 @@ async function tellAboutDeletedBackups(deleted) {
       title,
       body: `Older than ${BACKUP_KEEP_DAYS} days: ${[...new Set(days)].join(', ')}`.slice(0, 300),
       link: '/settings?section=backups',
-      dedupeKey: `backup-deleted:${deleted[0].id}:${user._id}`,
+      dedupeKey: `backup-${deleteAt ? 'warning' : 'deleted'}:${deleted[0].id}:${user._id}`,
     });
   }
 }
@@ -167,8 +220,9 @@ async function tellAboutDeletedBackups(deleted) {
  * Back up the whole database the app is connected to.
  * Safe to run twice: each run makes its own, complete backup.
  * @param {{ now?: Date, chunkDocuments?: number }} [options]  Only tests pass these
+ * Old backups are not deleted here: that is the clean-up (runBackupCleanup), at its own time.
  * @returns {Promise<{ id: string, createdAt: string, documents: number, bytes: number,
- *                     collections: number, deleted: string[] }>}
+ *                     collections: number }>}
  */
 export async function createBackup({ now = new Date(), chunkDocuments } = {}) {
   const db = mongoose.connection.db;
@@ -202,18 +256,78 @@ export async function createBackup({ now = new Date(), chunkDocuments } = {}) {
     contentType: 'application/json',
   });
 
-  const { kept, deleted, expired } = await pruneBackups([...(await listBackups()), summary], now);
   await uploadObject({
     key: BACKUP_INDEX_KEY,
-    body: toJsonBuffer({ backups: kept }),
+    body: toJsonBuffer({ backups: [summary, ...(await listBackups())] }),
     contentType: 'application/json',
   });
 
-  logger.info({ ...summary, deleted }, 'Database backup finished');
-  await tellAboutDeletedBackups(expired).catch((error) =>
-    logger.warn({ err: error }, 'Could not tell about the deleted backups'),
+  logger.info(summary, 'Database backup finished');
+  return summary;
+}
+
+// India time is UTC + 5:30, the whole year.
+const INDIA_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+/** The India day of a moment, as "2026-10-12". */
+const indiaDay = (moment) =>
+  new Date(moment.getTime() + INDIA_OFFSET_MS).toISOString().slice(0, 10);
+/** The moment of "HH:mm" India time on an India day. */
+const indiaMoment = (day, time) => new Date(Date.parse(`${day}T${time}:00.000Z`) - INDIA_OFFSET_MS);
+
+/** Do one of the two daily steps only once: true for the run that may do it. */
+async function claimDay(field, day) {
+  const result = await Settings.updateOne(
+    { key: 'app', [`backups.${field}`]: { $ne: day } },
+    { $set: { [`backups.${field}`]: day } },
   );
-  return { ...summary, deleted };
+  return result.modifiedCount > 0;
+}
+
+/**
+ * The clean-up, called every minute: at the delete time of Settings → Backups the backups older
+ * than the keep time are deleted; the people who manage the settings are told that many minutes
+ * before (or, with 0 minutes, at that moment). Each step is done once per day, also when the
+ * server was down at the exact minute (it then happens at the next run of that day).
+ * @param {{ now?: Date }} [options]  Only tests pass this
+ * @returns {Promise<{ warned: string[], deleted: string[] }>} The ids of the backups
+ */
+export async function runBackupCleanup({ now = new Date() } = {}) {
+  const done = { warned: [], deleted: [] };
+  if (!isStorageConfigured()) return done;
+  const settings = await readCleanupSettings();
+  const today = indiaDay(now);
+
+  // The warning: also for a delete time early tomorrow, when the warning falls on today.
+  if (settings.notifyMinutesBefore > 0) {
+    for (const day of [today, indiaDay(new Date(now.getTime() + DAY_MS))]) {
+      const deleteAt = indiaMoment(day, settings.deleteTime);
+      const warnAt = new Date(deleteAt.getTime() - settings.notifyMinutesBefore * 60 * 1000);
+      if (now < warnAt || now >= deleteAt || settings.lastWarningDay === day) continue;
+      if (!(await claimDay('lastWarningDay', day))) continue;
+      const expired = expiredAt(await listBackups(), deleteAt);
+      await tellAboutDeletedBackups(expired, { deleteAt });
+      done.warned = expired.map((backup) => backup.id);
+    }
+  }
+
+  const deleteAt = indiaMoment(today, settings.deleteTime);
+  if (now >= deleteAt && settings.lastCleanupDay !== today) {
+    if (await claimDay('lastCleanupDay', today)) {
+      const { kept, deleted, expired } = await pruneBackups(await listBackups(), now);
+      if (deleted.length > 0) {
+        await uploadObject({
+          key: BACKUP_INDEX_KEY,
+          body: toJsonBuffer({ backups: kept }),
+          contentType: 'application/json',
+        });
+        logger.info({ deleted }, 'Old database backups deleted');
+        // Told before already, unless the setting says "at that moment".
+        if (settings.notifyMinutesBefore === 0) await tellAboutDeletedBackups(expired);
+      }
+      done.deleted = deleted;
+    }
+  }
+  return done;
 }
 
 /**
