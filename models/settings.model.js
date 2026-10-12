@@ -41,6 +41,12 @@ const settingsSchema = new mongoose.Schema(
       // Who gets an inbound call from a number nobody knows, or whose owner has no phone.
       defaultInboundUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     },
+    ai: {
+      // The most the AI may cost in one month, in paise. Reached: AI features pause.
+      monthlyCapPaise: { type: Number, min: 0 },
+      // How many AI runs one person may start in a day.
+      dailyRunsPerUser: { type: Number, min: 0 },
+    },
     backups: {
       // When backups older than the keep time are deleted, India time, "HH:mm".
       deleteTime: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/ },

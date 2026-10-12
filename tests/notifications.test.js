@@ -120,6 +120,8 @@ describe('preferences', () => {
       ['call_missed', true],
       // Added with the 7-day backup rule (2026-10-12).
       ['backup_deleted', true],
+      // Added with the AI layer (phase 05): the AI budget is nearly or fully used.
+      ['ai_budget', true],
     ]);
 
     await asAgent.patch('/api/notifications/preferences').send({ enabled: false });

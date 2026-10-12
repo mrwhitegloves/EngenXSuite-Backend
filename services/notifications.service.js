@@ -10,6 +10,7 @@ import {
   Notification,
 } from '../models/notification.model.js';
 import { PushSubscription } from '../models/pushSubscription.model.js';
+import { Role } from '../models/role.model.js';
 import { User } from '../models/user.model.js';
 
 // Notifications. notify() is the ONLY way one is created: no other file writes the
@@ -64,6 +65,34 @@ export async function notify({ userId, type, title, body, link, dedupeKey, actor
       logger.error({ err: error, type }, 'Notification could not be created');
     }
     return null;
+  }
+}
+
+/**
+ * Tell the people who manage the settings (by default only the CEO): things about the system
+ * itself, such as old backups being deleted or the AI budget running out. Who that is comes
+ * from the permissions (settings: edit, everything), never from the name of an account type.
+ * `dedupeKey` is made per person here.
+ * @param {{ type: string, title: string, body?: string, link?: string, dedupeKey?: string }} message
+ */
+export async function notifySettingsManagers({ dedupeKey, ...message }) {
+  const roles = await Role.find({
+    grants: { $elemMatch: { feature: 'settings', action: 'edit', scope: 'all' } },
+  })
+    .select('_id')
+    .lean();
+  const users = await User.find({
+    roleId: { $in: roles.map((role) => role._id) },
+    status: 'active',
+  })
+    .select('_id')
+    .lean();
+  for (const user of users) {
+    await notify({
+      ...message,
+      userId: user._id,
+      ...(dedupeKey ? { dedupeKey: `${dedupeKey}:${user._id}` } : {}),
+    });
   }
 }
 

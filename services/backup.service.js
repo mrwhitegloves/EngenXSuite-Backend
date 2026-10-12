@@ -17,10 +17,8 @@ import { enqueue } from '../infra/queues.js';
 import { deleteObject, isStorageConfigured, readObject, uploadObject } from '../infra/storage.js';
 import { writeAudit } from '../lib/audit.js';
 import { badRequest, conflict, createAppError, notFound } from '../lib/errors.js';
-import { Role } from '../models/role.model.js';
 import { Settings } from '../models/settings.model.js';
-import { User } from '../models/user.model.js';
-import { notify } from './notifications.service.js';
+import { notifySettingsManagers } from './notifications.service.js';
 
 // Our own database backup (the Atlas Free tier has none). Every collection is copied to the
 // private storage bucket, and can be copied back into an EMPTY, SEPARATE database.
@@ -187,33 +185,19 @@ const formatTime = (value) =>
  */
 async function tellAboutDeletedBackups(deleted, { deleteAt } = {}) {
   if (deleted.length === 0) return;
-  const roles = await Role.find({
-    grants: { $elemMatch: { feature: 'settings', action: 'edit', scope: 'all' } },
-  })
-    .select('_id')
-    .lean();
-  const users = await User.find({
-    roleId: { $in: roles.map((role) => role._id) },
-    status: 'active',
-  })
-    .select('_id')
-    .lean();
   const days = deleted.map((backup) => formatDay(backup.createdAt));
   const what =
     deleted.length === 1 ? 'An old database backup' : `${deleted.length} old database backups`;
   const title = deleteAt
     ? `${what} will be deleted at ${formatTime(deleteAt)}`
     : `${what} ${deleted.length === 1 ? 'was' : 'were'} deleted`;
-  for (const user of users) {
-    await notify({
-      userId: user._id,
-      type: 'backup_deleted',
-      title,
-      body: `Older than ${BACKUP_KEEP_DAYS} days: ${[...new Set(days)].join(', ')}`.slice(0, 300),
-      link: '/settings?section=backups',
-      dedupeKey: `backup-${deleteAt ? 'warning' : 'deleted'}:${deleted[0].id}:${user._id}`,
-    });
-  }
+  await notifySettingsManagers({
+    type: 'backup_deleted',
+    title,
+    body: `Older than ${BACKUP_KEEP_DAYS} days: ${[...new Set(days)].join(', ')}`.slice(0, 300),
+    link: '/settings?section=backups',
+    dedupeKey: `backup-${deleteAt ? 'warning' : 'deleted'}:${deleted[0].id}`,
+  });
 }
 
 /**

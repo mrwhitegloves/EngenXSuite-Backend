@@ -16,6 +16,7 @@ export const NOTIFICATION_TYPES = {
   lead_received: 'A new lead comes in for me (Meta ads, website)',
   call_missed: 'I missed a call',
   backup_deleted: 'Old database backups are deleted (for people who manage the settings)',
+  ai_budget: 'The AI budget is nearly or fully used (for people who manage the settings)',
 };
 export const NOTIFICATION_TYPE_KEYS = Object.keys(NOTIFICATION_TYPES);
 

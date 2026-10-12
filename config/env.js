@@ -58,6 +58,10 @@ const envSchema = z.object({
   // same as REALTIME_URL. In development: the address of a tunnel.
   API_PUBLIC_URL: z.url().optional(),
 
+  // The AI layer (docs/AI.md): the key of the OpenRouter account. Optional: without it every AI
+  // feature says "AI is not set up yet" and the rest of the CRM works as before.
+  OPENROUTER_API_KEY: z.string().min(1).optional(),
+
   // Meta lead ads (docs/META_LEADS.md). All three are needed; without them the webhook refuses
   // every request and no lead is fetched.
   //   META_APP_SECRET         the Meta app's secret: checks that a webhook really is from Meta
