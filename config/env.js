@@ -68,7 +68,7 @@ const envSchema = z.object({
   META_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
   META_GRAPH_VERSION: z
     .string()
-    .regex(/^vd+.d+$/)
+    .regex(/^v\d+\.\d+$/, 'must look like v21.0')
     .default('v21.0'),
 
   // Browser push (notifications also when the tab is closed). A key pair made once with
