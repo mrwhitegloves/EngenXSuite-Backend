@@ -57,6 +57,6 @@ export function summarizeAccount({ context, accountId, userId, inputRefs }) {
     userId,
     entityType: 'accounts',
     entityId: accountId,
-    maxTokens: 900,
+    maxTokens: 3000,
   });
 }

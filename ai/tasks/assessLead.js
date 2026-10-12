@@ -63,6 +63,6 @@ export function assessLead({ context, leadId, userId, inputRefs }) {
     userId,
     entityType: 'opportunities',
     entityId: leadId,
-    maxTokens: 900,
+    maxTokens: 3000,
   });
 }

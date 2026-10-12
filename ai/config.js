@@ -99,8 +99,10 @@ export const AI_MODEL_CLASS_KEYS = Object.keys(AI_MODEL_CLASSES);
 export const AI_API_URL = 'https://openrouter.ai/api/v1/chat/completions';
 // One model call may take this long before it counts as failed.
 export const AI_TIMEOUT_MS = 60_000;
-// The longest answer a task may ask for, unless it says otherwise.
-export const AI_DEFAULT_MAX_TOKENS = 1500;
+// The longest answer a task may ask for, unless it says otherwise. Generous on purpose: an
+// answer that is cut off is not valid JSON and is paid for twice (found with a real model:
+// 900 was too little for a company summary).
+export const AI_DEFAULT_MAX_TOKENS = 3000;
 
 // The provider bills in US dollars; the cap is kept in rupees. An assumption, not a live rate:
 // set a little high on purpose, so the counted spend is never below the real one.
