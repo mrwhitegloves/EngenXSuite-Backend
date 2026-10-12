@@ -405,7 +405,9 @@ export async function acceptNextAction(actor, insightId, context = {}) {
     },
     { requestId: context.requestId, origin: { source: 'ai' } },
   );
-  await saveFeedback(actor, insight, { verdict: 'accepted', taskId: task.id });
+  // A correction the person wrote before stays a correction.
+  const verdict = mine?.verdict === 'edited' ? 'edited' : 'accepted';
+  await saveFeedback(actor, insight, { verdict, taskId: task.id });
   await writeAudit({
     actor,
     action: 'ai.suggestion_accepted',
