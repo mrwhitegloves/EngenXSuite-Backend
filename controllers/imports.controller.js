@@ -6,6 +6,7 @@ import {
   previewImport,
   saveTemplate,
   startImport,
+  suggestMappingWithAi,
   undoImport,
   uploadImport,
 } from '../services/imports.service.js';
@@ -40,6 +41,11 @@ export async function getImportById(req, res) {
 export async function postPreview(req, res) {
   const { params, body } = req.validated;
   sendOk(res, await previewImport(req.user, params.id, body));
+}
+
+// POST /api/imports/:id/suggest-mapping: ask the AI which column fills which field.
+export async function postSuggestMapping(req, res) {
+  sendOk(res, await suggestMappingWithAi(req.user, req.validated.params.id));
 }
 
 // POST /api/imports/:id/run: start saving the rows in the background.

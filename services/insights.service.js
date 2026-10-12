@@ -1,7 +1,10 @@
+import { AI_DAILY_REFRESH } from '../ai/config.js';
 import { getAiSettings, isAiReady } from '../ai/settings.js';
 import { assessLead } from '../ai/tasks/assessLead.js';
 import { summarizeAccount } from '../ai/tasks/summarizeAccount.js';
+import { JOB_NAMES } from '../constants/jobNames.js';
 import { logger } from '../infra/logger.js';
+import { enqueue } from '../infra/queues.js';
 import { writeAudit } from '../lib/audit.js';
 import { can } from '../lib/can.js';
 import { conflict, forbidden, notFound } from '../lib/errors.js';
@@ -453,4 +456,69 @@ export async function autoRefreshInsight({ kind, id }) {
     }
     throw error;
   }
+}
+
+/**
+ * The records whose AI answer has grown old: open leads after 3 days, companies after 7.
+ * Oldest first, and no more than the daily number.
+ * @param {Date} [now]
+ * @returns {Promise<{ kind: 'lead' | 'account', id: string }[]>}
+ */
+export async function findInsightsToRefresh(now = new Date()) {
+  const before = (days) => new Date(now.getTime() - days * DAY_MS);
+  const [leadInsights, accountInsights] = await Promise.all([
+    AiInsight.find({
+      kind: 'lead_assessment',
+      generatedAt: { $lt: before(AI_DAILY_REFRESH.leadAfterDays) },
+    })
+      .select('entityId')
+      .sort({ generatedAt: 1 })
+      .lean(),
+    AiInsight.find({
+      kind: 'account_summary',
+      audience: 'all',
+      generatedAt: { $lt: before(AI_DAILY_REFRESH.accountAfterDays) },
+    })
+      .select('entityId')
+      .sort({ generatedAt: 1 })
+      .limit(AI_DAILY_REFRESH.maxAccounts)
+      .lean(),
+  ]);
+  // A closed or deleted lead is not worth asking about again.
+  const open = await Opportunity.find({
+    _id: { $in: leadInsights.map((insight) => insight.entityId) },
+    status: 'open',
+    ...NOT_DELETED,
+  })
+    .select('_id')
+    .lean();
+  const isOpen = new Set(open.map((lead) => String(lead._id)));
+  return [
+    ...leadInsights
+      .map((insight) => String(insight.entityId))
+      .filter((id) => isOpen.has(id))
+      .slice(0, AI_DAILY_REFRESH.maxLeads)
+      .map((id) => ({ kind: 'lead', id })),
+    ...accountInsights.map((insight) => ({ kind: 'account', id: String(insight.entityId) })),
+  ];
+}
+
+/**
+ * The morning job: put one refresh job per old insight on the `ai` queue (two run at a time,
+ * so the budget is not spent in a burst). Safe to run twice: a record is queued once per day.
+ * @returns {Promise<{ queued: number }>}
+ */
+export async function queueDailyRefresh(now = new Date()) {
+  if (!isAiReady() || !(await getAiSettings()).autoRefresh) return { queued: 0 };
+  const targets = await findInsightsToRefresh(now);
+  const dayKey = now.toISOString().slice(0, 10);
+  for (const { kind, id } of targets) {
+    await enqueue(
+      'ai',
+      JOB_NAMES.insightRefresh,
+      { kind, id },
+      { jobId: `insight-${kind}-${id}-daily-${dayKey}` },
+    );
+  }
+  return { queued: targets.length };
 }

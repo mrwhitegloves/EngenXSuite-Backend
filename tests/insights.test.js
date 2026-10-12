@@ -32,7 +32,8 @@ const { Role } = await import('../models/role.model.js');
 const { Task } = await import('../models/task.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed, seedStartingLists, seedStatusLists } = await import('../seeds/seed.js');
-const { autoRefreshInsight } = await import('../services/insights.service.js');
+const { autoRefreshInsight, findInsightsToRefresh, queueDailyRefresh } =
+  await import('../services/insights.service.js');
 const { clearTestDb, startTestDbWithTransactions, stopTestDb } =
   await import('./helpers/testDb.js');
 
@@ -392,5 +393,30 @@ describe('keeping insights up to date', () => {
     await asAgent.post(`/api/insights/leads/${leadId}/refresh`);
     const listed = (await asAgent.get('/api/opportunities')).body.data[0];
     expect(listed).toMatchObject({ aiScore: 62, aiRiskLevel: 'medium' });
+  });
+});
+
+describe('the morning refresh', () => {
+  it('picks answers that have grown old: open leads after 3 days, companies after 7', async () => {
+    answers = [ASSESSMENT, SUMMARY];
+    await asAgent.post(`/api/insights/leads/${leadId}/refresh`);
+    await asCeo.post(`/api/insights/accounts/${accountId}/refresh`);
+    expect(await findInsightsToRefresh()).toEqual([]);
+
+    const daysAgo = (days) => new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+    await AiInsight.updateMany({}, { $set: { generatedAt: daysAgo(4) } });
+    expect(await findInsightsToRefresh()).toEqual([{ kind: 'lead', id: leadId }]);
+    await AiInsight.updateMany({}, { $set: { generatedAt: daysAgo(8) } });
+    expect(await findInsightsToRefresh()).toEqual([
+      { kind: 'lead', id: leadId },
+      { kind: 'account', id: accountId },
+    ]);
+
+    // A closed lead is not asked about again.
+    await Opportunity.updateOne({ _id: leadId }, { $set: { status: 'lost' } });
+    expect(await findInsightsToRefresh()).toEqual([{ kind: 'account', id: accountId }]);
+    // Switched off: the morning job queues nothing.
+    await asCeo.patch('/api/settings/ai').send({ autoRefresh: false });
+    expect(await queueDailyRefresh()).toEqual({ queued: 0 });
   });
 });

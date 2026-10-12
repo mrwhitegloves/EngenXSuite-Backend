@@ -26,6 +26,7 @@ import { User } from '../models/user.model.js';
 import { createAccount, deleteAccount, updateAccount } from './accounts.service.js';
 import { loadRequestUser } from './auth.service.js';
 import { createContacts, deleteContact, updateContact } from './contacts.service.js';
+import { suggestCsvMapping } from '../ai/tasks/suggestCsvMapping.js';
 import { readRow, suggestMapping, toColumns, uniqueHeaders } from './importRows.service.js';
 
 // CSV import (requirements REQ-IMP-001 … 007). The steps a person goes through:
@@ -141,6 +142,23 @@ export async function listImports(actor, { page, pageSize }) {
   });
   const names = await userNames(rows.map((row) => row.createdBy));
   return { items: rows.map((row) => toListView(row, names)), pagination };
+}
+
+/**
+ * Ask the AI which column fills which field. A suggestion only: nothing is saved, the person
+ * sees it on the mapping step and changes what is wrong.
+ * @returns {Promise<{ mapping: { column: string, field: string }[] }>}
+ */
+export async function suggestMappingWithAi(actor, importId) {
+  const item = await loadImport(actor, importId);
+  const mapping = await suggestCsvMapping({
+    headers: item.headers,
+    sampleRows: item.sampleRows,
+    fields: IMPORT_FIELDS,
+    importId: item._id,
+    userId: actor._id,
+  });
+  return { mapping };
 }
 
 export async function getImport(actor, importId) {

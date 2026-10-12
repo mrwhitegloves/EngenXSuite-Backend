@@ -36,6 +36,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every morning at 06:30 India time: refresh the AI answers that have grown old.
+    id: 'ai-insight-daily',
+    queue: 'ai',
+    cron: '30 6 * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.insightDaily,
+    isEnabled: () => true,
+  },
+  {
     // Every minute: task reminders and "overdue" notifications.
     id: 'task-reminders',
     queue: 'messaging',

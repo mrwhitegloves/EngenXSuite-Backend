@@ -6,6 +6,7 @@ import {
   postImport,
   postPreview,
   postRun,
+  postSuggestMapping,
   postTemplate,
   postUndo,
   removeTemplate,
@@ -13,6 +14,7 @@ import {
 import { MAX_IMPORT_BYTES } from '../constants/importFields.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { authorize } from '../middleware/authorize.js';
+import { createAiLimiter } from '../middleware/rateLimit.js';
 import { singleFileUpload } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
@@ -58,6 +60,14 @@ router.post(
   authorize('imports', 'create'),
   validate({ params: idParams, body: previewImportBody }),
   postPreview,
+);
+// Asks the AI: costs a little money, so it is rate limited per person.
+router.post(
+  '/:id/suggest-mapping',
+  authorize('imports', 'create'),
+  createAiLimiter(),
+  validate({ params: idParams }),
+  postSuggestMapping,
 );
 router.post(
   '/:id/run',

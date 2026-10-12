@@ -108,6 +108,17 @@ export const AI_DEFAULT_MAX_TOKENS = 3000;
 // set a little high on purpose, so the counted spend is never below the real one.
 export const AI_USD_TO_INR = 90;
 
+// Each morning the system asks the AI again about open leads (and companies) whose answer is
+// older than this: time alone changes the picture ("no contact for 9 days"). Only answers
+// somebody asked for before, only while "keep answers up to date" is on, and no more than this
+// many a day.
+export const AI_DAILY_REFRESH = {
+  leadAfterDays: 3,
+  accountAfterDays: 7,
+  maxLeads: 50,
+  maxAccounts: 20,
+};
+
 // The starting limits; all three are edited in Settings → AI.
 export const AI_DEFAULT_MONTHLY_CAP_PAISE = 2000 * 100;
 export const AI_DEFAULT_DAILY_RUNS_PER_USER = 100;

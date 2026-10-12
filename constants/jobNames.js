@@ -11,4 +11,5 @@ export const JOB_NAMES = {
   importUndo: 'import.undo',
   taskReminders: 'tasks.reminders',
   insightRefresh: 'ai.insight-refresh',
+  insightDaily: 'ai.insight-daily',
 };
