@@ -89,8 +89,9 @@ export async function getCallRecord(uuid) {
     const record = await getClient().calls.get(uuid);
     const pick = (camel, snake) => record?.[camel] ?? record?.[snake];
     return {
+      // The real length. (The billed length is rounded up to Plivo's 30-second steps.)
       durationSec:
-        Number(pick('billDuration', 'bill_duration') ?? pick('callDuration', 'call_duration')) || 0,
+        Number(pick('callDuration', 'call_duration') ?? pick('billDuration', 'bill_duration')) || 0,
       cost: Number(pick('totalAmount', 'total_amount')) || 0,
       hangupCause: pick('hangupCauseName', 'hangup_cause_name') ?? null,
     };
