@@ -1,4 +1,5 @@
 import { sendList, sendOk } from '../lib/respond.js';
+import { assistOnThread, summarizeMailFile } from '../services/emailAssist.service.js';
 import {
   classifyNow,
   draftAnswer,
@@ -64,4 +65,15 @@ export async function getFiles(req, res) {
 // POST /api/emails/write: the AI writes a mail, or changes the one on the screen. Sends nothing.
 export async function postWrite(req, res) {
   sendOk(res, await writeWithAi(req.user, req.validated.body));
+}
+
+// POST /api/emails/threads/:id/assist: a summary, the tasks, a meeting, a check, three versions.
+export async function postAssist(req, res) {
+  const { params, body } = req.validated;
+  sendOk(res, await assistOnThread(req.user, params.id, body));
+}
+
+// POST /api/emails/files/summary: what a file of a mail says.
+export async function postFileSummary(req, res) {
+  sendOk(res, await summarizeMailFile(req.user, req.validated.body));
 }

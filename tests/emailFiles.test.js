@@ -165,11 +165,13 @@ const { createApp } = await import('../app.js');
 const { createSessionMiddleware } = await import('../middleware/session.js');
 const { AiRun } = await import('../models/aiRun.model.js');
 const { Contact } = await import('../models/contact.model.js');
-const { Email } = await import('../models/email.model.js');
+const { Email, EmailThread } = await import('../models/email.model.js');
+const { Notification } = await import('../models/notification.model.js');
 const { Role } = await import('../models/role.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed, seedStartingLists, seedStatusLists } = await import('../seeds/seed.js');
 const { loadRequestUser } = await import('../services/auth.service.js');
+const { runFollowUpReminders } = await import('../services/emailAssist.service.js');
 const { syncMailbox } = await import('../services/emailSync.service.js');
 const { completeConnect } = await import('../services/googleConnection.service.js');
 const { clearTestDb, startTestDbWithTransactions, stopTestDb } =
@@ -466,5 +468,201 @@ describe('the AI writes a mail', () => {
       404,
     );
     expect((await asAsha.post('/api/emails/write').send({ mode: 'new' })).status).toBe(400);
+  });
+});
+
+describe('the AI helps on a conversation', () => {
+  let thread;
+  beforeEach(async () => {
+    deliver({
+      from: CUSTOMER,
+      subject: 'Pilot',
+      text: 'Please send the offer by Friday. Can we talk on Friday at 3 pm?',
+      thread: 't1',
+      files: [
+        { filename: 'spec.txt', mimeType: 'text/plain', content: Buffer.from('3 presses, 400 t') },
+      ],
+    });
+    await syncMailbox(asha._id);
+    [thread] = await threadsOf(asAsha);
+  });
+  const assist = (client, body) =>
+    client.post(`/api/emails/threads/${thread.id}/assist`).send(body);
+
+  it('a summary, for everyone who may read the conversation', async () => {
+    const summary = {
+      summary: 'The customer wants an offer and a call on Friday.',
+      customerAsks: ['An offer by Friday'],
+      wePromised: [],
+      openQuestions: ['The time of the call'],
+    };
+    aiAnswers = [summary, summary];
+    expect((await assist(asAsha, { kind: 'summary' })).body.data).toEqual(summary);
+    expect((await assist(asCeo, { kind: 'summary' })).status).toBe(200);
+    expect(aiRequests[0].conversation[0]).toMatchObject({
+      direction: 'inbound',
+      files: ['spec.txt'],
+    });
+    expect((await assist(asOther, { kind: 'summary' })).status).toBe(404);
+    expect((await assist(asAsha, { kind: 'nonsense' })).status).toBe(400);
+  });
+
+  it('the tasks in it, with a day; nothing is created by the AI', async () => {
+    aiAnswers = [
+      {
+        tasks: [
+          { title: 'Send the offer', dueInDays: 2, reason: 'She asks for it by Friday.' },
+          { title: 'Confirm the call', dueInDays: null, reason: 'She proposes Friday 3 pm.' },
+        ],
+      },
+    ];
+    const before = Date.now();
+    const answer = (await assist(asAsha, { kind: 'tasks' })).body.data;
+    expect(answer.tasks.map((task) => task.title)).toEqual(['Send the offer', 'Confirm the call']);
+    expect(new Date(answer.tasks[0].dueAt) - before).toBeGreaterThan(47 * 3600 * 1000);
+    expect(answer.tasks[1].dueAt).toBeNull();
+    expect(answer).toMatchObject({ accountId, contactId });
+    expect(answer.opportunityId).toBeTruthy();
+    expect(aiRequests[0].today).toMatch(/^\d{4}-\d{2}-\d{2} \(\w+day\)$/);
+    expect((await asAsha.get('/api/tasks?view=all')).body.data).toEqual([]);
+  });
+
+  it('a meeting it asks for, with its time in India', async () => {
+    aiAnswers = [
+      {
+        wantsMeeting: true,
+        title: 'Call about the pilot',
+        mode: 'online',
+        startAt: '2026-10-16T15:00',
+        durationMinutes: 30,
+        reason: 'She asks to talk on Friday at 3 pm.',
+      },
+    ];
+    const answer = (await assist(asAsha, { kind: 'meeting' })).body.data;
+    expect(answer).toMatchObject({ wantsMeeting: true, mode: 'online', durationMinutes: 30 });
+    expect(answer.startAt).toBe('2026-10-16T09:30:00.000Z');
+  });
+
+  it('a check and three versions of my mail, only in my own mailbox', async () => {
+    aiAnswers = [
+      {
+        isReadyToSend: false,
+        issues: [{ kind: 'missing', text: 'The price is still [price].' }],
+        unansweredQuestions: ['Can we talk on Friday at 3 pm?'],
+      },
+    ];
+    const review = await assist(asAsha, { kind: 'review', draft: 'The pilot costs [price].' });
+    expect(review.body.data.issues).toEqual([
+      { kind: 'missing', text: 'The price is still [price].' },
+    ]);
+    expect(aiRequests[0].draft).toBe('The pilot costs [price].');
+    expect((await assist(asAsha, { kind: 'review' })).status).toBe(400);
+
+    aiAnswers = [
+      {
+        variants: [
+          { label: 'short', body: 'Dear Asha,\n\nFriday 3 pm works.\n\nRegards,\nAsha Agent' },
+          {
+            label: 'detailed',
+            body: 'Dear Asha,\n\nFriday 3 pm works. The offer follows.\n\nRegards,\nAsha Agent',
+          },
+          {
+            label: 'formal',
+            body: 'Dear Ms Verma,\n\nFriday at 3 pm suits us.\n\nYours sincerely,\nAsha Agent',
+          },
+        ],
+      },
+    ];
+    const variants = await assist(asAsha, { kind: 'variants', instruction: 'Agree to Friday.' });
+    expect(variants.body.data.variants.map((item) => item.label)).toEqual([
+      'short',
+      'detailed',
+      'formal',
+    ]);
+    expect(aiRequests[1]).toMatchObject({
+      mode: 'reply',
+      sender: 'Asha Agent',
+      instruction: 'Agree to Friday.',
+      customer: { person: 'Asha Verma', company: 'Bharat Forge' },
+    });
+    // The CEO reads the conversation but does not write in another person's mailbox.
+    expect((await assist(asCeo, { kind: 'variants' })).status).toBe(403);
+    expect((await assist(asCeo, { kind: 'review', draft: 'Hi' })).status).toBe(403);
+    expect(mailbox.messages).toHaveLength(1); // nothing was sent
+  });
+
+  it('what a file of a mail says, for the people who may see the mail', async () => {
+    const { url } = (await Email.findOne().lean()).attachments[0];
+    const summary = {
+      summary: 'A short specification.',
+      keyPoints: ['3 presses'],
+      figures: ['400 t: press force'],
+    };
+    aiAnswers = [summary];
+    const answer = await asAsha.post('/api/emails/files/summary').send({ url });
+    expect(answer.body.data).toEqual({ filename: 'spec.txt', ...summary });
+    expect(aiRequests[0]).toEqual({ name: 'spec.txt', text: '3 presses, 400 t' });
+    expect((await asOther.post('/api/emails/files/summary').send({ url })).status).toBe(404);
+    expect(
+      (await asAsha.post('/api/emails/files/summary').send({ url: `${BUCKET_URL}backups/x.gz` }))
+        .status,
+    ).toBe(404);
+  });
+
+  it('the mood of the customer is read with the rest', async () => {
+    const reading = {
+      category: 'follow_up',
+      needsReply: true,
+      summary: 'She waits.',
+      suggestedAction: '',
+    };
+    aiAnswers = [{ ...reading, sentiment: 'negative' }, reading];
+    const first = await asAsha.post(`/api/emails/threads/${thread.id}/classify`);
+    expect(first.body.data.ai.sentiment).toBe('negative');
+    // A model that leaves the mood out: taken as neutral.
+    const second = await asAsha.post(`/api/emails/threads/${thread.id}/classify`);
+    expect(second.body.data.ai.sentiment).toBe('neutral');
+  });
+});
+
+describe('a mail of ours without an answer', () => {
+  it('is brought up after 3 and after 7 days, once each, and shows under "follow-up due"', async () => {
+    await asAsha
+      .post('/api/emails/send')
+      .send({ to: [CUSTOMER], subject: 'Our offer', text: 'Please find our offer.' });
+    const thread = await EmailThread.findOne().lean();
+    const sentAt = thread.lastMessageAt.getTime();
+    const day = 24 * 3600 * 1000;
+    const followUps = () => Notification.find({ type: 'email_follow_up' }).sort({ _id: 1 }).lean();
+
+    expect(await runFollowUpReminders(new Date(sentAt + 2 * day))).toEqual({ told: 0 });
+    expect(await runFollowUpReminders(new Date(sentAt + 3.5 * day))).toEqual({ told: 1 });
+    expect(await runFollowUpReminders(new Date(sentAt + 3.6 * day))).toEqual({ told: 0 });
+    expect(await runFollowUpReminders(new Date(sentAt + 5 * day))).toEqual({ told: 0 });
+    expect(await runFollowUpReminders(new Date(sentAt + 7.2 * day))).toEqual({ told: 1 });
+    const told = await followUps();
+    expect(told.map((item) => item.title)).toEqual([
+      'No answer from Asha Verma for 3 days',
+      'No answer from Asha Verma for 7 days',
+    ]);
+    expect(told[0].link).toBe(`/inbox?thread=${thread._id}`);
+
+    expect(await threadsOf(asAsha, '?view=follow_up')).toHaveLength(0);
+    await EmailThread.updateOne(
+      { _id: thread._id },
+      { $set: { lastMessageAt: new Date(Date.now() - 4 * day) } },
+    );
+    expect(await threadsOf(asAsha, '?view=follow_up')).toHaveLength(1);
+    expect(await threadsOf(asCeo, '?view=follow_up')).toHaveLength(0); // only one's own mailbox
+
+    // The customer answers: nothing more is due.
+    deliver({
+      from: CUSTOMER,
+      subject: 'Re: Our offer',
+      text: 'Thanks.',
+      thread: thread.gmailThreadId,
+    });
+    await syncMailbox(asha._id);
+    expect(await threadsOf(asAsha, '?view=follow_up')).toHaveLength(0);
   });
 });

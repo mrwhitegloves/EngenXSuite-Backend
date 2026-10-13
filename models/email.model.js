@@ -19,6 +19,8 @@ export const EMAIL_CATEGORIES = [
   'other',
 ];
 
+export const EMAIL_SENTIMENTS = ['positive', 'neutral', 'negative'];
+
 const emailThreadSchema = new mongoose.Schema(
   {
     // Whose mailbox it is in. The conversation as Gmail knows it.
@@ -42,6 +44,8 @@ const emailThreadSchema = new mongoose.Schema(
       needsReply: { type: Boolean },
       summary: { type: String, maxlength: 600 },
       suggestedAction: { type: String, maxlength: 300 },
+      // How the customer sounds in their newest mail.
+      sentiment: { type: String, enum: EMAIL_SENTIMENTS },
       aiRunId: { type: ObjectId, ref: 'AiRun' },
       forMessageId: { type: ObjectId },
       at: { type: Date },

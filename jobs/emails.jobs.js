@@ -1,6 +1,12 @@
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { enqueue } from '../infra/queues.js';
+import { runFollowUpReminders } from '../services/emailAssist.service.js';
 import { connectedUserIds, syncMailbox } from '../services/emailSync.service.js';
+
+/** Every morning: tell people about mails of theirs that got no answer for 3 or 7 days. */
+export async function runEmailFollowUpsJob() {
+  return runFollowUpReminders();
+}
 
 /**
  * Bring one person's mailbox up to date. Safe to run twice: one run at a time per mailbox, and

@@ -4,9 +4,11 @@ import {
   getMailbox,
   getThreadById,
   getThreads,
+  postAssist,
   postAttachment,
   postClassify,
   postDraft,
+  postFileSummary,
   postSend,
   postSync,
   postWrite,
@@ -20,7 +22,9 @@ import { singleFileUpload } from '../middleware/upload.js';
 import { MAX_UPLOAD_BYTES } from '../services/emailFiles.service.js';
 import {
   accountFilesQuery,
+  assistBody,
   draftBody,
+  fileSummaryBody,
   listThreadsQuery,
   sendEmailBody,
   writeWithAiBody,
@@ -58,6 +62,20 @@ router.post(
   aiLimiter,
   validate({ body: writeWithAiBody }),
   postWrite,
+);
+router.post(
+  '/threads/:id/assist',
+  authorize(FEATURE, 'view'),
+  aiLimiter,
+  validate({ params: idParams, body: assistBody }),
+  postAssist,
+);
+router.post(
+  '/files/summary',
+  authorize(FEATURE, 'view'),
+  aiLimiter,
+  validate({ body: fileSummaryBody }),
+  postFileSummary,
 );
 router.post('/threads/:id/classify', authorize(FEATURE, 'view'), aiLimiter, byId, postClassify);
 router.post(

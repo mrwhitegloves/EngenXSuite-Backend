@@ -16,6 +16,7 @@ export const NOTIFICATION_TYPES = {
   lead_received: 'A new lead comes in for me (Meta ads, website)',
   call_missed: 'I missed a call',
   email_received: 'A customer writes to me (mail)',
+  email_follow_up: 'A mail of mine got no answer for 3 or 7 days',
   meeting_invite: 'A colleague invites me to a meeting',
   meeting_reminder: 'A meeting of mine starts soon',
   backup_deleted: 'Old database backups are deleted (for people who manage the settings)',

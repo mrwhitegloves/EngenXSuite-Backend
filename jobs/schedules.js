@@ -45,6 +45,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every morning at 09:30 India time: mails of ours that got no answer for 3 or 7 days.
+    id: 'email-follow-ups',
+    queue: 'messaging',
+    cron: '30 9 * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailFollowUps,
+    isEnabled: () => true,
+  },
+  {
     // Every 5 minutes: take over what changed in every connected Google Calendar.
     id: 'calendar-sync-all',
     queue: 'integrations',

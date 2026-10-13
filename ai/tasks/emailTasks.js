@@ -1,12 +1,12 @@
 import { z } from 'zod';
-import { EMAIL_CATEGORIES } from '../../models/email.model.js';
+import { EMAIL_CATEGORIES, EMAIL_SENTIMENTS } from '../../models/email.model.js';
 import { runAiTask } from '../runTask.js';
 
 // AI tasks on customer mail: say what a conversation is and whether it needs an answer, and
 // draft an answer for the person to read, change and send. Neither sends anything, and
 // neither changes a record of the CRM.
 
-export const CLASSIFY_EMAIL_VERSION = 'classifyEmail/v1';
+export const CLASSIFY_EMAIL_VERSION = 'classifyEmail/v2';
 export const DRAFT_REPLY_VERSION = 'draftReply/v1';
 
 export const emailClassSchema = z.object({
@@ -17,6 +17,8 @@ export const emailClassSchema = z.object({
   summary: z.string().trim().min(1).max(600),
   // The one thing the sales person should do now; empty when nothing is needed.
   suggestedAction: z.string().trim().max(300),
+  // How the customer sounds. Left out by the model: taken as neutral.
+  sentiment: z.enum(EMAIL_SENTIMENTS).catch('neutral'),
 });
 
 const CLASSIFY_SYSTEM = `You read business email for a company that sells industrial AI, digital transformation and engineering solutions to factories in India.
@@ -37,9 +39,10 @@ Rules:
 - "needsReply" is true only when the newest message is from the customer and asks or expects something from us.
 - Always write in plain, simple, correct English, also when the mail is in Hindi or Hinglish.
 - Never suggest a price, a discount, a change of owner or a change of stage.
+- "sentiment" is how the customer sounds in their newest message: "positive" (pleased, keen, thankful), "negative" (unhappy, impatient, losing interest, refusing) or "neutral" (plain business, no feeling shown). When unsure: "neutral".
 
 Answer with one JSON object and nothing else:
-{ "category": "one of the categories", "needsReply": true or false, "summary": "1 or 2 sentences", "suggestedAction": "one step for the sales person, or an empty text" }`;
+{ "category": "one of the categories", "needsReply": true or false, "summary": "1 or 2 sentences", "suggestedAction": "one step for the sales person, or an empty text", "sentiment": "positive, neutral or negative" }`;
 
 /**
  * @param {{ messages: object[], threadId: unknown, userId?: unknown }} input

@@ -4,7 +4,7 @@ import { email, objectId, pagination } from './common.js';
 export const listThreadsQuery = z.object({
   ...pagination,
   // all: every conversation I may see. waiting: the customer wrote last. mine: my own mailbox.
-  view: z.enum(['all', 'waiting', 'mine']).optional(),
+  view: z.enum(['all', 'waiting', 'mine', 'follow_up']).optional(),
   search: z.string().trim().max(100).optional(),
   accountId: objectId.optional(),
   opportunityId: objectId.optional(),
@@ -56,3 +56,15 @@ export const draftBody = z.object({
   // How the answer should be ("short", "ask for a call on Friday").
   instruction: z.string().trim().max(1000).optional(),
 });
+
+// One of the AI's helps on a conversation (services/emailAssist.service.js).
+export const assistBody = z.object({
+  kind: z.enum(['summary', 'tasks', 'meeting', 'review', 'variants']),
+  // The mail on the screen: checked ("review"), or said again in three versions ("variants").
+  draft: z.string().trim().max(8000).optional(),
+  instruction: z.string().trim().max(2000).optional(),
+  mode: z.enum(['reply', 'follow_up']).optional(),
+});
+
+// A file of a mail, by its own address.
+export const fileSummaryBody = z.object({ url: z.string().url().max(1000) });

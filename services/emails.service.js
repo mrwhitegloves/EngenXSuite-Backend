@@ -40,15 +40,17 @@ const OWNERSHIP = { ownerField: 'userId' };
 const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 
 /** The conversations a person may see. */
-const visibleTo = (actor) => ({
+export const visibleThreads = (actor) => ({
   $or: [
     { userId: actor._id },
     { $and: [scopeFilter(actor, FEATURE, OWNERSHIP), { accountId: { $ne: null } }] },
   ],
 });
 
-async function loadThread(actor, threadId) {
-  const thread = await EmailThread.findOne({ $and: [{ _id: threadId }, visibleTo(actor)] }).lean();
+export async function loadThreadForViewer(actor, threadId) {
+  const thread = await EmailThread.findOne({
+    $and: [{ _id: threadId }, visibleThreads(actor)],
+  }).lean();
   if (!thread) throw notFound('Conversation not found');
   return thread;
 }
@@ -105,6 +107,7 @@ function toThreadView(thread, names, actor) {
           needsReply: Boolean(thread.ai.needsReply),
           summary: thread.ai.summary,
           suggestedAction: thread.ai.suggestedAction || null,
+          sentiment: thread.ai.sentiment ?? 'neutral',
           at: thread.ai.at,
         }
       : null,
@@ -121,9 +124,16 @@ export async function listThreads(actor, query) {
   const escaped = query.search?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const filter = {
     $and: [
-      visibleTo(actor),
+      visibleThreads(actor),
       query.view === 'waiting' ? { lastDirection: 'inbound' } : {},
       query.view === 'mine' ? { userId: actor._id } : {},
+      query.view === 'follow_up'
+        ? {
+            userId: actor._id,
+            lastDirection: 'outbound',
+            lastMessageAt: { $lte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+          }
+        : {},
       query.accountId ? { accountId: query.accountId } : {},
       query.opportunityId ? { opportunityId: query.opportunityId } : {},
       query.contactId ? { contactId: query.contactId } : {},
@@ -149,7 +159,7 @@ export async function listThreads(actor, query) {
 
 /** One conversation with its messages, oldest first. */
 export async function getThread(actor, threadId) {
-  const thread = await loadThread(actor, threadId);
+  const thread = await loadThreadForViewer(actor, threadId);
   const [names, emails] = await Promise.all([
     namesOf([thread]),
     Email.find({ threadId: thread._id }).sort({ sentAt: 1 }).lean(),
@@ -183,7 +193,9 @@ export function uploadAttachment(actor, file) {
  */
 export async function listAccountFiles(actor, accountId) {
   const account = await loadAccountForAction(actor, accountId, 'view');
-  const threads = await EmailThread.find({ $and: [{ accountId: account._id }, visibleTo(actor)] })
+  const threads = await EmailThread.find({
+    $and: [{ accountId: account._id }, visibleThreads(actor)],
+  })
     .select('_id subject')
     .lean();
   const subjects = new Map(threads.map((thread) => [String(thread._id), thread.subject]));
@@ -225,7 +237,8 @@ async function readAttachments(actor, refs = []) {
     } else if (key) {
       const email = await Email.findOne({ 'attachments.url': ref.url }).lean();
       const isVisible =
-        email && (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleTo(actor)] }));
+        email &&
+        (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleThreads(actor)] }));
       if (isVisible) meta = email.attachments.find((file) => file.url === ref.url);
     }
     const content = meta ? await readObject(key) : null;
@@ -296,7 +309,7 @@ export async function sendEmail(actor, mail, context = {}) {
   let thread = null;
   let answered = null;
   if (mail.threadId) {
-    thread = await loadThread(actor, mail.threadId);
+    thread = await loadThreadForViewer(actor, mail.threadId);
     if (!sameId(thread.userId, actor._id)) {
       throw forbidden('You can answer only in conversations of your own mailbox.');
     }
@@ -355,7 +368,7 @@ export async function sendEmail(actor, mail, context = {}) {
 
 /** Ask the AI to read a conversation again (what it is, whether it needs an answer). */
 export async function classifyNow(actor, threadId) {
-  const thread = await loadThread(actor, threadId);
+  const thread = await loadThreadForViewer(actor, threadId);
   await classifyThread(thread._id, actor._id);
   return getThread(actor, thread._id);
 }
@@ -367,7 +380,7 @@ export async function classifyNow(actor, threadId) {
  * @returns {Promise<{ body: string }>}
  */
 export async function draftAnswer(actor, threadId, { instruction } = {}) {
-  const thread = await loadThread(actor, threadId);
+  const thread = await loadThreadForViewer(actor, threadId);
   if (!sameId(thread.userId, actor._id)) {
     throw forbidden('You can answer only in conversations of your own mailbox.');
   }
@@ -427,7 +440,7 @@ export async function writeWithAi(actor, request) {
   let contactId = request.contactId;
   let leadId = null;
   if (request.threadId) {
-    thread = await loadThread(actor, request.threadId);
+    thread = await loadThreadForViewer(actor, request.threadId);
     if (!sameId(thread.userId, actor._id)) {
       throw forbidden('You can write only in conversations of your own mailbox.');
     }
@@ -452,7 +465,7 @@ export async function writeWithAi(actor, request) {
     leadId ? Opportunity.findById(leadId).select('name requirement stageId').lean() : null,
     // For a new mail: what was talked about before with this company, in a line each.
     !thread && accountId
-      ? EmailThread.find({ $and: [{ accountId }, visibleTo(actor)] })
+      ? EmailThread.find({ $and: [{ accountId }, visibleThreads(actor)] })
           .select('subject lastMessageAt lastDirection snippet ai.summary')
           .sort({ lastMessageAt: -1 })
           .limit(5)
