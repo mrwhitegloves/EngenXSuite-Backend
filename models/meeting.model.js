@@ -56,6 +56,21 @@ const meetingSchema = new mongoose.Schema(
     googleEventId: { type: String },
     // Why the last change did not reach Google Calendar; empty when it did.
     googleSyncError: { type: String, maxlength: 300 },
+    // Pictures, documents and voice notes of the meeting, in our private storage.
+    files: {
+      type: [
+        {
+          _id: false,
+          filename: String,
+          mimeType: String,
+          size: Number,
+          url: String,
+          uploadedBy: { type: ObjectId, ref: 'User' },
+          uploadedAt: Date,
+        },
+      ],
+      default: [],
+    },
     // Set once the people of our side were reminded; cleared when the time changes.
     reminderSentAt: { type: Date },
     createdBy: { type: ObjectId, ref: 'User' },

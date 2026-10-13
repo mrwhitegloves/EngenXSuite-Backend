@@ -1,6 +1,13 @@
 import { sendCreated, sendOk } from '../lib/respond.js';
 import { requestCalendarSync } from '../services/calendarSync.service.js';
 import {
+  addMeetingFile,
+  decideProposedTask,
+  getMeetingRecord,
+  summarizeMeetingNow,
+  transcribeMeetingFile,
+} from '../services/meetingSummaries.service.js';
+import {
   closeMeeting,
   createMeeting,
   getMeeting,
@@ -46,4 +53,31 @@ export async function postClose(req, res) {
 // POST /api/meetings/sync: read my Google Calendar now.
 export async function postSync(req, res) {
   sendOk(res, await requestCalendarSync(req.user));
+}
+
+// GET /api/meetings/:id/record: the AI's summary of the meeting (when made) and its files.
+export async function getRecord(req, res) {
+  sendOk(res, await getMeetingRecord(req.user, req.validated.params.id));
+}
+
+// POST /api/meetings/:id/summary: let the AI summarize the meeting from its notes.
+export async function postSummary(req, res) {
+  sendOk(res, await summarizeMeetingNow(req.user, req.validated.params.id));
+}
+
+// POST /api/meetings/:id/summary/tasks: accept or reject a task the AI proposed.
+export async function postDecideTask(req, res) {
+  const { params, body } = req.validated;
+  sendOk(res, await decideProposedTask(req.user, params.id, body, { requestId: req.id }));
+}
+
+// POST /api/meetings/:id/files: a picture, a document or a voice note of the meeting.
+export async function postFile(req, res) {
+  sendCreated(res, await addMeetingFile(req.user, req.validated.params.id, req.file));
+}
+
+// POST /api/meetings/:id/files/transcribe: turn a voice note into text, into the notes.
+export async function postTranscribe(req, res) {
+  const { params, body } = req.validated;
+  sendOk(res, await transcribeMeetingFile(req.user, params.id, body));
 }

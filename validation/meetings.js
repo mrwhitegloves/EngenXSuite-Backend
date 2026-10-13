@@ -79,3 +79,12 @@ export const closeMeetingBody = z.object({
   notes: z.string().trim().max(20000).optional(),
   tellGuests: z.boolean().optional(),
 });
+
+// A task the AI proposed after a meeting: accepted (it becomes a real task) or rejected.
+export const decideTaskBody = z.object({
+  index: z.number().int().min(0).max(50),
+  decision: z.enum(['accept', 'reject']),
+});
+
+// A voice note of the meeting, by its own address.
+export const transcribeBody = z.object({ url: z.string().url().max(1000) });
