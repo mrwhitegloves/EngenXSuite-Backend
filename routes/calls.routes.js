@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import {
+  getCallById,
   getCalls,
+  getFormOptions,
   getRecording,
   getSettings,
   patchCall,
@@ -66,6 +68,8 @@ const FEATURE = 'calls';
 callsRouter.use(requireAuth);
 callsRouter.post('/', authorize(FEATURE, 'create'), validate({ body: startCallBody }), postCall);
 callsRouter.get('/', authorize(FEATURE, 'view'), validate({ query: listCallsQuery }), getCalls);
+callsRouter.get('/form-options', authorize(FEATURE, 'view'), getFormOptions);
+callsRouter.get('/:id', authorize(FEATURE, 'view'), validate({ params: idParams }), getCallById);
 callsRouter.patch(
   '/:id',
   authorize(FEATURE, 'edit'),

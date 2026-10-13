@@ -6,6 +6,8 @@ import {
   answerDialResult,
   answerInbound,
   getCallSettings,
+  getCallDetail,
+  getCallFormOptions,
   getRecordingLink,
   listCalls,
   startCall,
@@ -27,6 +29,16 @@ export async function postCall(req, res) {
 export async function getCalls(req, res) {
   const { items, pagination } = await listCalls(req.user, req.validated.query);
   sendList(res, items, pagination);
+}
+
+// GET /api/calls/form-options: whose calls I may filter by.
+export async function getFormOptions(req, res) {
+  sendOk(res, await getCallFormOptions(req.user));
+}
+
+// GET /api/calls/:id: one call in full (times, both sides, what happened).
+export async function getCallById(req, res) {
+  sendOk(res, await getCallDetail(req.user, req.validated.params.id));
 }
 
 // PATCH /api/calls/:id: what came of the call.

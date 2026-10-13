@@ -18,10 +18,10 @@ import {
   startCall as placeCall,
 } from '../integrations/plivo/client.js';
 import { writeAudit } from '../lib/audit.js';
-import { can } from '../lib/can.js';
+import { can, getScope } from '../lib/can.js';
 import { badRequest, conflict, createAppError, forbidden, notFound } from '../lib/errors.js';
 import { normalizePhone } from '../lib/phone.js';
-import { runListQuery } from '../lib/queryBuilder.js';
+import { buildFilter, buildSort, containsPattern, runListQuery } from '../lib/queryBuilder.js';
 import { scopeFilter } from '../lib/scopeFilter.js';
 import { systemActor } from '../lib/systemActor.js';
 import { Account } from '../models/account.model.js';
@@ -158,11 +158,17 @@ async function toViews(calls, actor) {
         .map(String),
     ),
   ];
-  const [users, contacts, transcripts] = await Promise.all([
+  const [users, contacts, accounts, leads, transcripts] = await Promise.all([
     User.find({ _id: { $in: [...ids('userId'), ...ids('answeredByUserId')] } })
       .select('name')
       .lean(),
     Contact.find({ _id: { $in: ids('contactId') } })
+      .select('name')
+      .lean(),
+    Account.find({ _id: { $in: ids('accountId') } })
+      .select('name')
+      .lean(),
+    Opportunity.find({ _id: { $in: ids('opportunityId') } })
       .select('name')
       .lean(),
     CallTranscript.find({ callId: { $in: calls.map((call) => call._id) } })
@@ -196,6 +202,8 @@ async function toViews(calls, actor) {
           ? named(users, call.answeredByUserId)
           : null,
       contact: named(contacts, call.contactId),
+      account: named(accounts, call.accountId),
+      lead: named(leads, call.opportunityId),
       opportunityId: call.opportunityId ? String(call.opportunityId) : null,
       hasRecording: Boolean(call.recordingUrl),
       // The text of the call exists (made from the recording by a person's request).
@@ -302,22 +310,174 @@ export async function listCalls(actor, query) {
     filter = { contactId: contact._id };
   } else {
     // Every call I may see: mine, my team's or everyone's, by the "calls" permission.
-    filter = {
-      $and: [
-        scopeFilter(actor, FEATURE, OWNERSHIP),
+    filter = buildFilter({
+      scope: scopeFilter(actor, FEATURE, OWNERSHIP),
+      equals: {
+        direction: query.direction,
+        status: query.status,
+        userId: query.userId,
+        outcome: query.outcome,
+      },
+      dates: { field: 'startedAt', query },
+      extra: [
         query.linked === 'no' ? { contactId: null } : {},
         query.linked === 'yes' ? { contactId: { $ne: null } } : {},
+        query.recording === 'yes' ? { recordingUrl: { $nin: [null, ''] } } : {},
+        await searchFilter(query.search),
       ],
-    };
+    });
   }
   const { rows, pagination } = await runListQuery(Call, {
     filter,
-    sort: { startedAt: -1, _id: -1 },
+    sort: buildSort(query.sort, CALL_SORT_FIELDS, '-startedAt'),
     page: query.page,
     pageSize: query.pageSize,
     select: '-plivo',
   });
   return { items: await toViews(rows, actor), pagination };
+}
+
+const CALL_SORT_FIELDS = { startedAt: 'startedAt', durationSec: 'durationSec', cost: 'cost' };
+
+/**
+ * Calls that match a search text: by the number (digits), or by the name of the person, the
+ * company or the lead. The scope is applied by the caller, so this only narrows.
+ */
+async function searchFilter(text) {
+  if (!text) return {};
+  const pattern = containsPattern(text);
+  const digits = text.replace(/\D/g, '');
+  const [contacts, accounts, leads] = await Promise.all([
+    Contact.find({ name: pattern }).select('_id').limit(200).lean(),
+    Account.find({ name: pattern }).select('_id').limit(200).lean(),
+    Opportunity.find({ name: pattern }).select('_id').limit(200).lean(),
+  ]);
+  const pick = (rows) => rows.map((row) => row._id);
+  return {
+    $or: [
+      { contactId: { $in: pick(contacts) } },
+      { accountId: { $in: pick(accounts) } },
+      { opportunityId: { $in: pick(leads) } },
+      ...(digits.length >= 3
+        ? [{ fromNumber: containsPattern(digits) }, { toNumber: containsPattern(digits) }]
+        : []),
+    ],
+  };
+}
+
+/** The people whose calls the actor may see: for the "Called by" filter of the call log. */
+export async function getCallFormOptions(actor) {
+  const scope = getScope(actor, FEATURE, 'view');
+  let filter = { _id: actor._id };
+  if (scope === 'all') filter = { status: 'active' };
+  else if (scope === 'team') filter = { _id: { $in: [actor._id, ...(actor.teamUserIds ?? [])] } };
+  const users = await User.find(filter).select('name').sort({ name: 1 }).lean();
+  return { users: users.map((user) => ({ id: String(user._id), name: user.name })) };
+}
+
+/** Plivo writes its times as "2026-10-12 14:55:48", in UTC. */
+const plivoTime = (text) => {
+  const date = text ? new Date(`${String(text).replace(' ', 'T').slice(0, 19)}Z`) : null;
+  return date && !Number.isNaN(date.getTime()) ? date : null;
+};
+const inr = (dollars) =>
+  Number.isFinite(Number(dollars)) && Number(dollars) > 0
+    ? Math.round(Number(dollars) * PLIVO_USD_TO_INR * 100) / 100
+    : 0;
+
+/**
+ * One call in full, the way Plivo's own call page shows it: its times, both sides (legs) with
+ * what each lasted and cost, how it ended, and what happened step by step.
+ */
+export async function getCallDetail(actor, callId) {
+  const call = await loadCallForAction(actor, callId, 'view');
+  const [view] = await toViews([call], actor);
+  const { dial, hangup, aLeg, bLeg, settledAt } = call.plivo ?? {};
+  const started = plivoTime(hangup?.StartTime) ?? call.startedAt ?? call.createdAt;
+  const answered = plivoTime(hangup?.AnswerTime) ?? call.answeredAt ?? null;
+  const ended = plivoTime(hangup?.EndTime) ?? call.endedAt ?? null;
+  const isOutbound = call.direction === 'outbound';
+  // The company number, as this call itself has it (the setting may have changed since).
+  const us = isOutbound ? call.fromNumber : call.toNumber;
+
+  // The two sides of the call, as Plivo lists them ("Self" and "Child").
+  const legs = [
+    {
+      relation: 'First side',
+      // Click-to-call: our number rings our own person. Inbound: the customer rings our number.
+      from: isOutbound ? us : call.fromNumber,
+      to: isOutbound ? (hangup?.To ? `+${String(hangup.To).replace(/\D/g, '')}` : null) : us,
+      who: isOutbound ? 'Our person’s phone' : 'The customer',
+      durationSec: aLeg?.durationSec ?? (Number(hangup?.Duration) || null),
+      costInr: inr(aLeg?.cost ?? hangup?.TotalCost),
+      hangupCause: aLeg?.hangupCause ?? hangup?.HangupCauseName ?? hangup?.HangupCause ?? null,
+    },
+    ...(dial
+      ? [
+          {
+            relation: 'Second side',
+            from: us,
+            to: dial.DialBLegTo ? `+${String(dial.DialBLegTo).replace(/\D/g, '')}` : null,
+            who: isOutbound ? 'The customer' : 'Our person’s phone',
+            durationSec: bLeg?.durationSec ?? null,
+            costInr: inr(bLeg?.cost),
+            hangupCause: bLeg?.hangupCause ?? dial.DialHangupCause ?? null,
+          },
+        ]
+      : []),
+  ];
+
+  // What happened, in order.
+  const events = [
+    {
+      at: call.createdAt,
+      what: isOutbound ? 'The call was started from the CRM' : 'The call came in',
+    },
+    started && {
+      at: started,
+      what: isOutbound
+        ? 'Plivo started ringing our person’s phone'
+        : 'Plivo answered and rang our person’s phone',
+    },
+    answered && {
+      at: answered,
+      what: isOutbound
+        ? 'Our person picked up; the customer was dialled'
+        : 'The first side was connected',
+    },
+    dial && {
+      at: ended ?? call.endedAt,
+      what: `The second side ended as: ${String(dial.DialStatus ?? 'unknown')}`,
+    },
+    ended && {
+      at: ended,
+      what: `The call ended${hangup?.HangupSource ? ` (hung up by: ${hangup.HangupSource})` : ''}`,
+    },
+    call.recordingUrl && { at: ended ?? call.endedAt, what: 'The recording was saved' },
+    settledAt && { at: settledAt, what: 'Length and charge were read from Plivo’s own record' },
+  ]
+    .filter((item) => item && item.at)
+    .sort((a, b) => new Date(a.at) - new Date(b.at));
+
+  return {
+    ...view,
+    plivoCallUuid: call.plivoCallUuid ?? null,
+    fromNumber: call.fromNumber,
+    toNumber: call.toNumber,
+    startedAt: started,
+    answeredAt: answered,
+    endedAt: ended,
+    // From the first ring to the pick-up.
+    ringSec: started && answered ? Math.max(0, Math.round((answered - started) / 1000)) : null,
+    hangupCauseName: hangup?.HangupCauseName ?? call.hangupCause ?? null,
+    hangupSource: hangup?.HangupSource ?? null,
+    isSettled: Boolean(settledAt),
+    recordingConsentPlayed: Boolean(call.recordingConsentPlayed),
+    legs,
+    events,
+    // Plivo's own words, for finding a fault. Only for people who manage the settings.
+    raw: can(actor, 'view', { feature: 'settings' }) ? { dial, hangup, aLeg, bLeg } : null,
+  };
 }
 
 /** One call for an action, by the "calls" permission; anything else is "not found". */
@@ -696,7 +856,7 @@ async function finishCall(callId) {
       type: 'call_missed',
       title: `Missed call from ${who}`,
       body: contact ? call.fromNumber : 'A number that is not in the CRM',
-      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : '/activities?view=calls',
+      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : `/calls/${call._id}`,
       dedupeKey: `call-missed:${call._id}`,
     });
     // The call-back task. One per call: a second run finds it there already.
