@@ -55,6 +55,7 @@ const { createSessionMiddleware } = await import('../middleware/session.js');
 const { Activity } = await import('../models/activity.model.js');
 const { AuditLog } = await import('../models/auditLog.model.js');
 const { Call } = await import('../models/call.model.js');
+const { Contact } = await import('../models/contact.model.js');
 const { Notification } = await import('../models/notification.model.js');
 const { Role } = await import('../models/role.model.js');
 const { Task } = await import('../models/task.model.js');
@@ -720,5 +721,156 @@ describe('inbound: the next person when the first does not pick up', () => {
     await User.updateOne({ _id: agent._id }, { $set: { managerId: ceo._id } });
     await ring('inbound-d');
     expect(String((await callOf('inbound-d')).fallbackUserId)).toBe(String(ceo._id));
+  });
+});
+
+describe('the call log', () => {
+  const HOUR = 60 * 60 * 1000;
+  let mine; // the agent's talked call with the customer
+  let other; // Omar's missed call from an unknown number
+
+  beforeEach(async () => {
+    const contact = await Contact.findById(contactId).lean();
+    const omar = await User.findOne({ email: 'other@engenx.in' }).lean();
+    mine = await Call.create({
+      plivoCallUuid: 'a-leg-1',
+      direction: 'outbound',
+      fromNumber: '+918035000000',
+      toNumber: '+919876543210',
+      status: 'completed',
+      startedAt: new Date(Date.now() - 2 * HOUR),
+      endedAt: new Date(Date.now() - 2 * HOUR + 60000),
+      durationSec: 31,
+      cost: 0.00474,
+      userId: agent._id,
+      contactId: contact._id,
+      accountId: contact.accountId,
+      opportunityId: leadId,
+      outcome: 'callback_requested',
+      recordingUrl: `${BUCKET_URL}recordings/x.mp3`,
+      plivo: {
+        dial: {
+          DialStatus: 'completed',
+          DialBLegTo: '919876543210',
+          DialHangupCause: 'NORMAL_CLEARING',
+        },
+        hangup: {
+          StartTime: '2026-10-12 14:55:41',
+          AnswerTime: '2026-10-12 14:55:48',
+          EndTime: '2026-10-12 14:56:01',
+          To: '919000000002',
+          Duration: '14',
+          TotalCost: '0.00237',
+          HangupCauseName: 'Normal Hangup',
+          HangupSource: 'Callee',
+        },
+        aLeg: { durationSec: 14, cost: 0.00237, hangupCause: 'Normal Hangup' },
+        bLeg: { durationSec: 8, cost: 0.00237, hangupCause: 'Normal Hangup' },
+        settledAt: new Date(),
+      },
+    });
+    other = await Call.create({
+      direction: 'inbound',
+      fromNumber: '+919333333333',
+      toNumber: '+918035000000',
+      status: 'missed',
+      startedAt: new Date(Date.now() - 30 * HOUR),
+      endedAt: new Date(Date.now() - 30 * HOUR),
+      durationSec: 0,
+      userId: omar._id,
+    });
+  });
+  const log = async (client, query = '') => (await client.get(`/api/calls${query}`)).body;
+
+  it('shows each person the calls of their scope, with company, person, lead and charge', async () => {
+    const all = await log(asCeo);
+    expect(all.meta.total).toBe(2);
+    expect(all.data[0]).toMatchObject({
+      direction: 'outbound',
+      status: 'completed',
+      number: '+919876543210',
+      durationSec: 31,
+      costInr: 0.38,
+      outcome: 'callback_requested',
+      user: { name: 'Asha Agent' },
+      contact: { name: 'Asha Verma' },
+      account: { name: 'Bharat Forge' },
+      lead: { name: 'OEE for press line' },
+      hasRecording: true,
+    });
+    // An agent sees only their own calls.
+    expect((await log(asAgent)).data.map((call) => call.id)).toEqual([String(mine._id)]);
+    expect((await log(asOther)).data.map((call) => call.id)).toEqual([String(other._id)]);
+    // Whose calls can be filtered by.
+    expect((await asCeo.get('/api/calls/form-options')).body.data.users).toHaveLength(3);
+    expect((await asAgent.get('/api/calls/form-options')).body.data.users).toEqual([
+      { id: String(agent._id), name: 'Asha Agent' },
+    ]);
+  });
+
+  it('is filtered, searched and sorted on the server', async () => {
+    const ids = async (query) => (await log(asCeo, query)).data.map((call) => String(call.id));
+    expect(await ids('?direction=inbound')).toEqual([String(other._id)]);
+    expect(await ids('?status=completed')).toEqual([String(mine._id)]);
+    expect(await ids('?outcome=callback_requested')).toEqual([String(mine._id)]);
+    expect(await ids(`?userId=${agent._id}`)).toEqual([String(mine._id)]);
+    expect(await ids('?recording=yes')).toEqual([String(mine._id)]);
+    expect(await ids('?linked=no')).toEqual([String(other._id)]);
+    expect(await ids('?range=today')).toEqual([String(mine._id)]);
+    // By the name of the person, the company or the lead, and by a part of the number.
+    expect(await ids('?search=verma')).toEqual([String(mine._id)]);
+    expect(await ids('?search=bharat')).toEqual([String(mine._id)]);
+    expect(await ids('?search=press line')).toEqual([String(mine._id)]);
+    expect(await ids('?search=93333')).toEqual([String(other._id)]);
+    expect(await ids('?search=nothing-like-this')).toEqual([]);
+    expect(await ids('?sort=durationSec')).toEqual([String(other._id), String(mine._id)]);
+    expect(await ids('?sort=-startedAt&pageSize=1&page=2')).toEqual([String(other._id)]);
+    expect((await asCeo.get('/api/calls?status=nonsense')).status).toBe(400);
+    // A search never widens what an agent may see.
+    expect((await log(asOther, '?search=verma')).data).toEqual([]);
+  });
+
+  it('one call in full: its times, both sides with length and charge, and what happened', async () => {
+    const detail = (await asAgent.get(`/api/calls/${mine._id}`)).body.data;
+    expect(detail).toMatchObject({
+      fromNumber: '+918035000000',
+      toNumber: '+919876543210',
+      startedAt: '2026-10-12T14:55:41.000Z',
+      answeredAt: '2026-10-12T14:55:48.000Z',
+      endedAt: '2026-10-12T14:56:01.000Z',
+      ringSec: 7,
+      hangupCauseName: 'Normal Hangup',
+      hangupSource: 'Callee',
+      costInr: 0.38,
+      isSettled: true,
+      raw: null, // Plivo's own words are for people who manage the settings
+    });
+    expect(detail.legs).toEqual([
+      {
+        relation: 'First side',
+        from: '+918035000000',
+        to: '+919000000002',
+        who: 'Our person’s phone',
+        durationSec: 14,
+        costInr: 0.19,
+        hangupCause: 'Normal Hangup',
+      },
+      {
+        relation: 'Second side',
+        from: '+918035000000',
+        to: '+919876543210',
+        who: 'The customer',
+        durationSec: 8,
+        costInr: 0.19,
+        hangupCause: 'Normal Hangup',
+      },
+    ]);
+    expect(detail.events.map((event) => event.what)).toContain(
+      'The call ended (hung up by: Callee)',
+    );
+    expect((await asCeo.get(`/api/calls/${mine._id}`)).body.data.raw.hangup.Duration).toBe('14');
+    // Somebody else's call is "not found".
+    expect((await asOther.get(`/api/calls/${mine._id}`)).status).toBe(404);
+    expect((await asAgent.get('/api/calls/not-an-id')).status).toBe(400);
   });
 });
