@@ -327,11 +327,11 @@ describe('what Plivo really sends, and its own record of the call', () => {
     // At once: it went through; the length is the whole call for now, the charge one side.
     expect(await Call.findById(callId).lean()).toMatchObject({
       status: 'completed',
-      durationSec: 60,
+      durationSec: 52,
       cost: 0.19,
     });
     expect((await Activity.findOne({ type: 'CALL' }).lean()).title).toBe(
-      'Call to Asha Verma · 1:00',
+      'Call to Asha Verma · 0:52',
     );
 
     // Plivo's books are not ready yet.

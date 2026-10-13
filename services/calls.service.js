@@ -187,6 +187,7 @@ async function toViews(calls, actor) {
       hangupCause: call.hangupCause ?? null,
       // What Plivo charged, in the currency of the Plivo account.
       cost: call.cost ?? null,
+      costInr: call.cost ? Math.round(call.cost * PLIVO_USD_TO_INR * 100) / 100 : null,
       outcome: call.outcome ?? null,
       user: named(users, call.userId),
       // Inbound: set when someone else picked up because the first person did not.
@@ -596,9 +597,17 @@ export async function answerConsent() {
   return speakXml((await readSettings()).consentText);
 }
 
+// Plivo reports a call's charge in US dollars (callbacks and API), while its console for an
+// Indian account shows rupees. Its two price lists differ by this fixed factor (0.00475 dollars
+// and 0.38 rupees a minute), so this is not a currency rate that moves.
+const PLIVO_USD_TO_INR = 80;
+
 // ── What the background job does with Plivo's events ────────────────────────────────────────
 
 const seconds = (value) => (Number.isFinite(Number(value)) ? Number(value) : 0);
+// Raised when the way a finished call is read from Plivo's record changes: every call of the
+// last two weeks is then read once more.
+const SETTLE_VERSION = 2;
 const clock = (total) => `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 const RESULT_WORDS = {
   missed: 'missed',
@@ -625,8 +634,9 @@ function resultOf(call) {
     seconds(bLeg?.durationSec) ||
     seconds(dial?.DialBLegDuration) ||
     // The whole call from Plivo's hang-up callback: a little long (it includes the ringing).
-    seconds(hangup?.BillDuration) ||
-    seconds(hangup?.Duration);
+    // Not BillDuration: that is rounded up to Plivo's 30-second billing steps.
+    seconds(hangup?.Duration) ||
+    seconds(hangup?.BillDuration);
   const base = {
     durationSec: talked ? length : 0,
     cost: cost || undefined,
@@ -720,7 +730,7 @@ async function finishCall(callId) {
  */
 export async function settleCall(callId) {
   const call = await Call.findById(callId).lean();
-  if (!call?.endedAt || call.plivo?.settledAt) return 'skipped';
+  if (!call?.endedAt || call.plivo?.settleVersion === SETTLE_VERSION) return 'skipped';
   const sides = [call.plivoCallUuid, call.plivo?.dial?.DialBLegUUID].map((uuid) =>
     uuid ? getCallRecord(String(uuid)) : null,
   );
@@ -729,7 +739,15 @@ export async function settleCall(callId) {
   const result = resultOf({ ...call, plivo: { ...call.plivo, aLeg, bLeg } });
   await Call.updateOne(
     { _id: call._id },
-    { $set: { ...result, 'plivo.aLeg': aLeg, 'plivo.bLeg': bLeg, 'plivo.settledAt': new Date() } },
+    {
+      $set: {
+        ...result,
+        'plivo.aLeg': aLeg,
+        'plivo.bLeg': bLeg,
+        'plivo.settledAt': new Date(),
+        'plivo.settleVersion': SETTLE_VERSION,
+      },
+    },
   );
   // The line on the timeline says the length: bring it in step.
   if (call.contactId || call.accountId || call.opportunityId) {
@@ -765,7 +783,7 @@ export async function settleWaitingCalls(now = new Date()) {
       $lt: new Date(now.getTime() - 60 * 1000),
     },
     plivoCallUuid: { $ne: null },
-    'plivo.settledAt': null,
+    'plivo.settleVersion': { $ne: SETTLE_VERSION },
   })
     .select('_id')
     .sort({ endedAt: -1 })
