@@ -2,6 +2,7 @@ import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import {
   isWhatsAppConfigured,
   missingWhatsAppSettings,
+  sendWhatsAppTemplate,
   sendWhatsAppText,
 } from '../integrations/meta/whatsapp.js';
 import { logger } from '../infra/logger.js';
@@ -467,4 +468,53 @@ export async function assignConversation(actor, conversationId, { assignedTo }, 
   });
   announce();
   return { assigned: true };
+}
+
+/**
+ * Send an approved template to a number: the way to write first, or after the 24 hours. The
+ * message is kept in that number's conversation (made when there is none) and on the timeline.
+ * Used by bulk sending; the caller has checked that the actor may write to this person.
+ * @param {{ phone: string, templateName: string, language: string, params?: string[] }} message
+ *        phone: in the international form ("+919876543210")
+ * @returns {Promise<{ conversationId: string }>}
+ */
+export async function sendTemplateMessage(actor, message, now = new Date()) {
+  const waId = String(message.phone ?? '').replace(/\D/g, '');
+  if (waId.length < 8)
+    throw createAppError('WHATSAPP_BAD_NUMBER', 400, 'The phone number is not complete.');
+  const sent = await sendWhatsAppTemplate(waId, {
+    name: message.templateName,
+    language: message.language,
+    params: message.params,
+  });
+  let conversation = await WhatsAppConversation.findOne({ waId }).lean();
+  if (!conversation) {
+    conversation = await WhatsAppConversation.findOneAndUpdate(
+      { waId },
+      { $setOnInsert: { waId, ...(await linksFor(waId)) } },
+      { upsert: true, returnDocument: 'after' },
+    ).lean();
+  }
+  const text = [`[Template: ${message.templateName}]`, ...(message.params ?? [])].join(' ');
+  const saved = await WhatsAppMessage.create({
+    conversationId: conversation._id,
+    wamid: sent.wamid || undefined,
+    direction: 'outbound',
+    type: 'template',
+    templateName: message.templateName,
+    text: text.slice(0, 5000),
+    status: 'sent',
+    sentBy: actor._id,
+    sentAt: now,
+  });
+  await WhatsAppConversation.updateOne(
+    { _id: conversation._id },
+    { $set: { snippet: text.slice(0, 300), lastMessageAt: now } },
+  );
+  const contact = conversation.contactId
+    ? await Contact.findById(conversation.contactId).select('name').lean()
+    : null;
+  await onTimeline(conversation, saved, contact?.name ?? `+${waId}`);
+  announce();
+  return { conversationId: String(conversation._id) };
 }

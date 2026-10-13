@@ -32,6 +32,8 @@ export const SOCKET_EVENTS = {
   meetingsChanged: 'meetings.changed',
   // A WhatsApp message came or went, its status moved, or a conversation was read or assigned.
   whatsappChanged: 'whatsapp.changed',
+  // A bulk sending was made, started, stopped, or handled its next person.
+  campaignsChanged: 'campaigns.changed',
   // An inbound lead arrived or was processed, or a lead form or the assignment rule changed.
   inboundLeadsChanged: 'inbound-leads.changed',
   // A tag was added, renamed, merged or deleted.

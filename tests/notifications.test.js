@@ -124,6 +124,8 @@ describe('preferences', () => {
       ['email_follow_up', true],
       // Added with WhatsApp (phase 07): a customer writes to me.
       ['whatsapp_received', true],
+      // Added with bulk sending: my sending is finished, or has stopped.
+      ['bulk_finished', true],
       // Added with meetings (phase 06): an invitation from a colleague, and "starts soon".
       ['meeting_invite', true],
       ['meeting_reminder', true],

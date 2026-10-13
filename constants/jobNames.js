@@ -15,6 +15,8 @@ export const JOB_NAMES = {
   emailSync: 'email.sync',
   emailSyncAll: 'email.sync-all',
   emailFollowUps: 'email.follow-ups',
+  campaignStep: 'campaign.step',
+  campaignSweep: 'campaign.sweep',
   emailWatchRenew: 'email.watch-renew',
   calendarSync: 'calendar.sync',
   calendarSyncAll: 'calendar.sync-all',

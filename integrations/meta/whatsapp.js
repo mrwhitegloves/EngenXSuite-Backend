@@ -88,3 +88,32 @@ export async function sendWhatsAppText(to, text) {
   });
   return { wamid: String(answer.messages?.[0]?.id ?? '') };
 }
+
+/**
+ * Send an approved template message. The only kind of message WhatsApp lets us START a
+ * conversation with, or send after the 24-hour window.
+ * @param {string} to  Digits only with the country code
+ * @param {{ name: string, language: string, params?: string[] }} template
+ *        params: the texts for the {{1}}, {{2}} … places of the template's body, in order
+ * @returns {Promise<{ wamid: string }>}
+ */
+export async function sendWhatsAppTemplate(to, { name, language, params = [] }) {
+  const answer = await post(`${env.WHATSAPP_PHONE_NUMBER_ID}/messages`, {
+    messaging_product: 'whatsapp',
+    recipient_type: 'individual',
+    to,
+    type: 'template',
+    template: {
+      name,
+      language: { code: language },
+      ...(params.length
+        ? {
+            components: [
+              { type: 'body', parameters: params.map((text) => ({ type: 'text', text })) },
+            ],
+          }
+        : {}),
+    },
+  });
+  return { wamid: String(answer.messages?.[0]?.id ?? '') };
+}

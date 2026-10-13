@@ -57,6 +57,8 @@ const whatsappMessageSchema = new mongoose.Schema(
     direction: { type: String, enum: ['inbound', 'outbound'], required: true },
     type: { type: String, enum: WHATSAPP_MESSAGE_TYPES, required: true },
     text: { type: String, maxlength: 5000 },
+    // For a template message: which approved template it was.
+    templateName: { type: String, maxlength: 120 },
     status: { type: String, enum: WHATSAPP_MESSAGE_STATUSES, required: true },
     errorCode: { type: String },
     errorMessage: { type: String, maxlength: 300 },

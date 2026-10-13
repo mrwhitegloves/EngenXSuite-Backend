@@ -6,6 +6,7 @@ import {
   runEmailSyncJob,
   runEmailWatchRenewJob,
 } from './emails.jobs.js';
+import { runCampaignStepJob, runCampaignSweepJob } from './campaigns.jobs.js';
 import { runImportJob, runImportUndoJob } from './imports.jobs.js';
 import { runInsightDailyJob, runInsightRefreshJob } from './insights.jobs.js';
 import {
@@ -40,6 +41,8 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.emailSync]: runEmailSyncJob,
   [JOB_NAMES.emailSyncAll]: runEmailSyncAllJob,
   [JOB_NAMES.emailFollowUps]: runEmailFollowUpsJob,
+  [JOB_NAMES.campaignStep]: runCampaignStepJob,
+  [JOB_NAMES.campaignSweep]: runCampaignSweepJob,
   [JOB_NAMES.emailWatchRenew]: runEmailWatchRenewJob,
   [JOB_NAMES.calendarSync]: runCalendarSyncJob,
   [JOB_NAMES.calendarSyncAll]: runCalendarSyncAllJob,

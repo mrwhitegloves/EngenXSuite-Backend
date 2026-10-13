@@ -269,3 +269,74 @@ describe('answering', () => {
     expect(kept.errorMessage).toContain('not a valid WhatsApp user');
   });
 });
+
+describe('a bulk WhatsApp template', () => {
+  it('goes to everyone in a bundle who has a number, and is kept in their conversation', async () => {
+    const { runCampaignStep } = await import('../services/campaigns.service.js');
+    const account = (await asCeo.get('/api/accounts?search=Shakti')).body.data[0];
+    await asCeo
+      .post(`/api/accounts/${account.id}/contacts`)
+      .send({ name: 'No Number', email: 'x@y.example' });
+    const bundle = (
+      await asCeo
+        .post('/api/bundles')
+        .send({ name: 'Foundries', accountIds: [account.id], includeCompany: false })
+    ).body.data;
+    expect(bundle.memberCount).toBe(2);
+
+    const sending = await asCeo.post('/api/campaigns').send({
+      name: 'Diwali greeting',
+      channel: 'whatsapp',
+      bundleId: bundle.id,
+      gapSeconds: 10,
+      templateName: 'festival_greeting',
+      templateLanguage: 'en',
+      templateParams: ['{{name}}', 'EngenX'],
+    });
+    expect(sending.status).toBe(201);
+    expect(sending.body.data.counts).toMatchObject({ total: 2, pending: 1, skipped: 1 });
+    const id = sending.body.data.id;
+    expect(
+      (
+        await asCeo
+          .post('/api/campaigns')
+          .send({ ...sending.request._data, templateName: 'Not A Template Name' })
+      ).status,
+    ).toBe(400);
+
+    await asCeo.post(`/api/campaigns/${id}/start`);
+    expect(await runCampaignStep(id)).toBe('sent');
+    expect(await runCampaignStep(id)).toBe('finished');
+    expect(meta.sent[0].body).toMatchObject({
+      to: CUSTOMER,
+      type: 'template',
+      template: {
+        name: 'festival_greeting',
+        language: { code: 'en' },
+        components: [
+          {
+            type: 'body',
+            parameters: [
+              { type: 'text', text: 'Rajesh Patil' },
+              { type: 'text', text: 'EngenX' },
+            ],
+          },
+        ],
+      },
+    });
+    const rows = (await asCeo.get(`/api/campaigns/${id}/recipients`)).body.data;
+    expect(rows.map((row) => [row.name, row.status, row.reason])).toEqual([
+      ['Rajesh Patil', 'sent', null],
+      ['No Number', 'skipped', 'No phone number is saved.'],
+    ]);
+    const kept = await WhatsAppMessage.findOne({ type: 'template' }).lean();
+    expect(kept).toMatchObject({
+      direction: 'outbound',
+      templateName: 'festival_greeting',
+      status: 'sent',
+    });
+    expect((await Activity.find({ type: 'WHATSAPP' }).lean()).map((entry) => entry.title)).toEqual([
+      'WhatsApp to Rajesh Patil',
+    ]);
+  });
+});

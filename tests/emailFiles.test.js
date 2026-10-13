@@ -190,6 +190,7 @@ const { Role } = await import('../models/role.model.js');
 const { User } = await import('../models/user.model.js');
 const { runSeed, seedStartingLists, seedStatusLists } = await import('../seeds/seed.js');
 const { loadRequestUser } = await import('../services/auth.service.js');
+const { runCampaignStep } = await import('../services/campaigns.service.js');
 const { runFollowUpReminders } = await import('../services/emailAssist.service.js');
 const { syncMailbox } = await import('../services/emailSync.service.js');
 const { completeConnect } = await import('../services/googleConnection.service.js');
@@ -958,5 +959,254 @@ describe('push from Gmail', () => {
     expect(events[0].payload).toEqual({ emailAddress: OWN, historyId: '999' });
     await processWebhookEvent(events[0]._id);
     expect((await Email.findOne().lean()).subject).toBe('Pushed');
+  });
+});
+
+describe('bulk mail', () => {
+  const CEO_MAIL = 'ceo@engenx.in';
+  const DAY = 24 * 3600 * 1000;
+  let bundleId;
+  let ceoId;
+
+  /** Run a sending to its end; what happened at each step. */
+  async function runToEnd(campaignId) {
+    const steps = [];
+    for (let guard = 0; guard < 30; guard += 1) {
+      const step = await runCampaignStep(campaignId);
+      steps.push(step);
+      if (['finished', 'paused', 'idle'].includes(step)) break;
+    }
+    return steps;
+  }
+  const recipientsOf = async (id) =>
+    (await asCeo.get(`/api/campaigns/${id}/recipients?pageSize=100`)).body.data;
+  const byName = (rows) => Object.fromEntries(rows.map((row) => [row.name, row]));
+  const newSending = (extra = {}) =>
+    asCeo.post('/api/campaigns').send({
+      name: 'October round',
+      channel: 'email',
+      bundleId,
+      gapSeconds: 5,
+      writeMode: 'ai',
+      brief: 'Tell them about our new OEE dashboard and offer a 30 minute demo.',
+      ...extra,
+    });
+
+  beforeEach(async () => {
+    const ceo = await loadRequestUser((await User.findOne({ email: CEO_MAIL }))._id);
+    ceoId = String(ceo._id);
+    await completeConnect(ceo, {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSec: 3600,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+      googleEmail: CEO_MAIL,
+      hostedDomain: 'engenx.in',
+    });
+    const made = [];
+    for (const [company, person, email, phone] of [
+      ['Shakti Works', 'Ravi Kumar', 'ravi@shakti.example'],
+      ['Nova Cast', 'Nina Shah', 'nina@nova.example'],
+      ['Tara Steel', 'Tara Rao', 'tara@tarasteel.example'],
+      ['Phone Only', 'Pat Phone', undefined, '+919811112222'],
+    ]) {
+      const created = await asCeo.post('/api/accounts/quick-add').send({
+        account: { name: company },
+        contacts: [
+          { name: person, ...(email ? { email } : {}), ...(phone ? { phone_number: phone } : {}) },
+        ],
+      });
+      made.push(created.body.data.account.id);
+    }
+    bundleId = (
+      await asCeo
+        .post('/api/bundles')
+        .send({ name: 'Everyone', accountIds: [accountId, ...made], includeCompany: false })
+    ).body.data.id;
+
+    // Asha Verma: the CEO wrote five days ago, no answer.
+    await asCeo
+      .post('/api/emails/send')
+      .send({ to: [CUSTOMER], subject: 'Our offer', text: 'Hello Asha' });
+    await EmailThread.updateOne(
+      { participants: CUSTOMER },
+      { $set: { lastMessageAt: new Date(Date.now() - 5 * DAY) } },
+    );
+    // Tara Rao: the CEO wrote yesterday.
+    await asCeo
+      .post('/api/emails/send')
+      .send({ to: ['tara@tarasteel.example'], subject: 'Hello Tara', text: 'Hello' });
+    await EmailThread.updateOne(
+      { participants: 'tara@tarasteel.example' },
+      { $set: { lastMessageAt: new Date(Date.now() - 1 * DAY) } },
+    );
+    // Ravi Kumar: he wrote to the CEO last.
+    deliver({ from: 'ravi@shakti.example', to: [CEO_MAIL], subject: 'Question', text: 'Price?' });
+    await syncMailbox(ceoId);
+    aiRequests = [];
+  });
+
+  it('reminds in the old conversation, writes a first mail, and skips with a reason', async () => {
+    const sending = await newSending();
+    expect(sending.status).toBe(201);
+    expect(sending.body.data).toMatchObject({
+      status: 'draft',
+      sender: 'Kunal CEO',
+      bundleName: 'Everyone',
+      counts: { total: 5, pending: 4, sent: 0, failed: 0, skipped: 1 },
+    });
+    const id = sending.body.data.id;
+    const before = mailbox.messages.length;
+    expect(await runCampaignStep(id)).toBe('idle'); // a draft sends nothing
+
+    aiAnswers = [
+      { subject: 'A', body: 'Dear reader,\n\nFirst text.\n\nRegards,\nKunal CEO' },
+      { subject: 'B', body: 'Dear reader,\n\nSecond text.\n\nRegards,\nKunal CEO' },
+    ];
+    expect((await asCeo.post(`/api/campaigns/${id}/start`)).body.data.status).toBe('running');
+    const steps = await runToEnd(id);
+    expect(steps.at(-1)).toBe('finished');
+    expect(steps.filter((step) => step === 'sent')).toHaveLength(2);
+
+    const rows = byName(await recipientsOf(id));
+    expect(rows['Asha Verma']).toMatchObject({
+      status: 'sent',
+      action: 'reminder',
+      subject: 'Our offer',
+    });
+    expect(rows['Nina Shah']).toMatchObject({ status: 'sent', action: 'new' });
+    expect(rows['Ravi Kumar'].status).toBe('skipped');
+    expect(rows['Ravi Kumar'].reason).toMatch(/They wrote to you last .* answer them yourself/);
+    expect(rows['Tara Rao'].status).toBe('skipped');
+    expect(rows['Tara Rao'].reason).toMatch(/You wrote to them 1 day ago .* only after 3 days/);
+    expect(rows['Pat Phone']).toMatchObject({
+      status: 'skipped',
+      reason: 'No email address is saved.',
+    });
+
+    // Two mails went out, and the reminder went into the old conversation.
+    expect(mailbox.messages).toHaveLength(before + 2);
+    const ashaThread = await EmailThread.findOne({ participants: CUSTOMER }).lean();
+    expect(ashaThread.messageCount).toBe(2);
+    expect(await EmailThread.countDocuments({ participants: CUSTOMER })).toBe(1);
+    // The AI got the reminder's conversation, and the first mail's company.
+    const modes = aiRequests.map((item) => item.mode).sort();
+    expect(modes).toEqual(['follow_up', 'new']);
+    expect(aiRequests.find((item) => item.mode === 'follow_up').instruction).toContain('reminder');
+    expect(aiRequests.find((item) => item.mode === 'new').customer.company).toBe('Nova Cast');
+
+    const done = (await asCeo.get(`/api/campaigns/${id}`)).body.data;
+    expect(done).toMatchObject({
+      status: 'finished',
+      counts: { total: 5, pending: 0, sent: 2, failed: 0, skipped: 3 },
+    });
+    const told = await Notification.find({ type: 'bulk_finished' }).lean();
+    expect(told.map((item) => [item.title, item.body])).toEqual([
+      ['Bulk sending finished: October round', '2 sent, 0 failed, 3 skipped'],
+    ]);
+    // Running it again sends nothing more.
+    expect(await runCampaignStep(id)).toBe('idle');
+    expect(mailbox.messages).toHaveLength(before + 2);
+
+    // The people who did not get it become a new bundle.
+    const rest = await asCeo.post(`/api/campaigns/${id}/bundle`).send({ name: 'Not reached' });
+    expect(rest.status).toBe(201);
+    expect(rest.body.data).toMatchObject({ name: 'Not reached', memberCount: 3 });
+    const members = (await asCeo.get(`/api/bundles/${rest.body.data.id}`)).body.data.members;
+    expect(members.map((item) => item.name).sort()).toEqual([
+      'Pat Phone',
+      'Ravi Kumar',
+      'Tara Rao',
+    ]);
+  });
+
+  it('never sends a mail in which the AI left something to fill in', async () => {
+    const id = (await newSending()).body.data.id;
+    const before = mailbox.messages.length;
+    aiAnswers = [
+      { subject: 'A', body: 'Dear Asha,\n\nThe demo is on [date].\n\nRegards,\nKunal CEO' },
+      { subject: 'B', body: 'Dear Nina,\n\nA demo takes 30 minutes.\n\nRegards,\nKunal CEO' },
+    ];
+    await asCeo.post(`/api/campaigns/${id}/start`);
+    await runToEnd(id);
+    const rows = await recipientsOf(id);
+    const failed = rows.filter((row) => row.status === 'failed');
+    expect(failed).toHaveLength(1);
+    expect(failed[0].reason).toContain('The AI left something to fill in ([date])');
+    expect(failed[0].body).toContain('[date]'); // kept, so a person can see what it wrote
+    expect(mailbox.messages).toHaveLength(before + 1);
+  });
+
+  it('a fixed text is filled in for each reader; pause, go on, cancel; only its maker runs it', async () => {
+    const sending = await newSending({
+      writeMode: 'fixed',
+      brief: undefined,
+      subject: 'A demo for {{company}}',
+      body: 'Dear {{name}},\n\nMay we show you our dashboard?\n\nRegards,\nKunal',
+      minDaysBeforeReminder: 0,
+    });
+    const id = sending.body.data.id;
+    // Not the maker (and without bulk sending at all).
+    expect((await asAsha.post(`/api/campaigns/${id}/start`)).status).toBe(403);
+    expect((await newSending({ writeMode: 'fixed' })).status).toBe(400); // no text
+    expect((await newSending({ gapSeconds: 1 })).status).toBe(400);
+
+    await asCeo.post(`/api/campaigns/${id}/start`);
+    aiAnswers = [{ subject: 'x', body: 'Dear Asha,\n\nA short reminder.\n\nRegards,\nKunal CEO' }];
+    const first = await runCampaignStep(id);
+    expect(['sent', 'skipped']).toContain(first);
+    const paused = await asCeo.post(`/api/campaigns/${id}/stop`).send({ action: 'pause' });
+    expect(paused.body.data).toMatchObject({
+      status: 'paused',
+      pauseReason: 'Paused by Kunal CEO.',
+    });
+    expect(await runCampaignStep(id)).toBe('idle');
+
+    await asCeo.post(`/api/campaigns/${id}/start`); // go on
+    aiAnswers.push({
+      subject: 'x',
+      body: 'Dear reader,\n\nA short reminder.\n\nRegards,\nKunal CEO',
+    });
+    await runToEnd(id);
+    const rows = byName(await recipientsOf(id));
+    expect(rows['Nina Shah']).toMatchObject({
+      status: 'sent',
+      action: 'new',
+      subject: 'A demo for Nova Cast',
+    });
+    expect(rows['Nina Shah'].body).toContain('Dear Nina Shah,');
+    // With "0 days", the person written to yesterday gets a reminder too.
+    expect(rows['Tara Rao']).toMatchObject({ status: 'sent', action: 'reminder' });
+    expect((await asCeo.post(`/api/campaigns/${id}/stop`).send({ action: 'cancel' })).status).toBe(
+      409,
+    ); // it is over
+
+    // A draft can be cancelled; then it never starts.
+    const other = (await newSending()).body.data.id;
+    expect(
+      (await asCeo.post(`/api/campaigns/${other}/stop`).send({ action: 'cancel' })).body.data
+        .status,
+    ).toBe('cancelled');
+    expect((await asCeo.post(`/api/campaigns/${other}/start`)).status).toBe(409);
+  });
+
+  it('shows before starting what it would do, with one mail as the AI would write it', async () => {
+    const id = (await newSending()).body.data.id;
+    const before = mailbox.messages.length;
+    aiAnswers = [
+      { subject: 'Our offer', body: 'Dear Asha,\n\nA reminder.\n\nRegards,\nKunal CEO' },
+    ];
+    const preview = (await asCeo.post(`/api/campaigns/${id}/preview`)).body.data;
+    expect(preview.plan.map((item) => item.will).sort()).toEqual([
+      'new',
+      'reminder',
+      'skip',
+      'skip',
+    ]);
+    expect(preview.sample.body).toContain('Regards');
+    expect(mailbox.messages).toHaveLength(before); // nothing was sent
   });
 });
