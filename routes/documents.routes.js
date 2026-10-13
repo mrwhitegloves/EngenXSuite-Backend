@@ -1,20 +1,55 @@
 import { Router } from 'express';
-import { getDocuments, postDocument, removeDocument } from '../controllers/documents.controller.js';
+import {
+  getDocuments,
+  getFolders,
+  patchDocument,
+  patchFolder,
+  postDocument,
+  postFolder,
+  removeDocument,
+  removeFolder,
+} from '../controllers/documents.controller.js';
 import { authorize } from '../middleware/authorize.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { singleFileUpload } from '../middleware/upload.js';
 import { validate } from '../middleware/validate.js';
 import { MAX_DOCUMENT_BYTES } from '../services/documents.service.js';
 import { idParams } from '../validation/common.js';
-import { listDocumentsQuery, uploadDocumentBody } from '../validation/documents.js';
+import {
+  browseDocumentsQuery,
+  createFolderBody,
+  renameFolderBody,
+  updateDocumentBody,
+  uploadDocumentBody,
+} from '../validation/documents.js';
 
-// The documents of a company (/api/documents). authorize() answers "may this person use
-// documents at all"; which company exactly is decided in the service.
+// The documents library (/api/documents): one for the whole CRM. The "documents" permission
+// decides: view (look, download, send with a mail), create (add), edit (rename, move, delete).
 const router = Router();
 const FEATURE = 'documents';
+const byId = validate({ params: idParams });
 
 router.use(requireAuth);
-router.get('/', authorize(FEATURE, 'view'), validate({ query: listDocumentsQuery }), getDocuments);
+router.get(
+  '/',
+  authorize(FEATURE, 'view'),
+  validate({ query: browseDocumentsQuery }),
+  getDocuments,
+);
+router.get('/folders', authorize(FEATURE, 'view'), getFolders);
+router.post(
+  '/folders',
+  authorize(FEATURE, 'create'),
+  validate({ body: createFolderBody }),
+  postFolder,
+);
+router.patch(
+  '/folders/:id',
+  authorize(FEATURE, 'edit'),
+  validate({ params: idParams, body: renameFolderBody }),
+  patchFolder,
+);
+router.delete('/folders/:id', authorize(FEATURE, 'edit'), byId, removeFolder);
 router.post(
   '/',
   authorize(FEATURE, 'create'),
@@ -23,6 +58,12 @@ router.post(
   validate({ body: uploadDocumentBody }),
   postDocument,
 );
-router.delete('/:id', authorize(FEATURE, 'edit'), validate({ params: idParams }), removeDocument);
+router.patch(
+  '/:id',
+  authorize(FEATURE, 'edit'),
+  validate({ params: idParams, body: updateDocumentBody }),
+  patchDocument,
+);
+router.delete('/:id', authorize(FEATURE, 'edit'), byId, removeDocument);
 
 export default router;

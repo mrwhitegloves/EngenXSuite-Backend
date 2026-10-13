@@ -801,43 +801,89 @@ describe('what a person decides about a conversation', () => {
   });
 });
 
-describe('documents of a company', () => {
-  it('are kept for the company, seen through it, and can go out with a mail', async () => {
-    const upload = (client) =>
-      client
-        .post('/api/documents')
-        .field('accountId', accountId)
-        .field('name', 'Company brochure')
-        .attach('file', Buffer.from('%PDF brochure'), {
-          filename: 'brochure.pdf',
-          contentType: 'application/pdf',
-        });
-    // A sales agent reads documents; adding them is for the manager line (by the roles).
+describe('the documents library', () => {
+  const upload = (client, fields = {}) => {
+    let call = client.post('/api/documents');
+    for (const [key, value] of Object.entries(fields)) call = call.field(key, value);
+    return call.attach('file', Buffer.from('%PDF brochure'), {
+      filename: 'brochure.pdf',
+      contentType: 'application/pdf',
+    });
+  };
+  const browse = async (client, query = '') =>
+    (await client.get(`/api/documents${query}`)).body.data;
+
+  it('one library for everyone, in folders the team makes itself', async () => {
+    // A sales agent looks and sends; adding and arranging is for the manager line (by the roles).
     expect((await upload(asAsha)).status).toBe(403);
-    const made = await upload(asCeo);
-    expect(made.status).toBe(201);
-    expect(made.body.data).toMatchObject({
+    expect((await asAsha.post('/api/documents/folders').send({ name: 'Mine' })).status).toBe(403);
+
+    const offers = (await asCeo.post('/api/documents/folders').send({ name: 'Offers' })).body.data;
+    const year = (
+      await asCeo.post('/api/documents/folders').send({ name: '2026', parentId: offers.id })
+    ).body.data;
+    expect((await asCeo.post('/api/documents/folders').send({ name: 'Offers' })).status).toBe(409);
+    expect((await asCeo.post('/api/documents/folders').send({ name: ' ' })).status).toBe(400);
+
+    const atTop = await upload(asCeo, { name: 'Company brochure' });
+    expect(atTop.status).toBe(201);
+    expect(atTop.body.data).toMatchObject({
       name: 'Company brochure',
       filename: 'brochure.pdf',
+      folderId: null,
       uploadedBy: 'Kunal CEO',
     });
-    expect(made.body.data.url).toContain(`documents/${accountId}/`);
-    expect(made.body.data.link).toContain('X-Amz-Signature');
+    expect(atTop.body.data.link).toContain('X-Amz-Signature');
+    const inYear = await upload(asCeo, { folderId: year.id, name: 'Offer for presses' });
+    expect(inYear.body.data.folderId).toBe(year.id);
 
-    const list = (client) => client.get(`/api/documents?accountId=${accountId}`);
-    expect((await list(asAsha)).body.data.map((item) => item.name)).toEqual(['Company brochure']);
-    expect((await list(asOther)).status).toBe(404); // not his company
-    expect((await asAsha.get('/api/documents')).status).toBe(400);
+    // Everyone with the permission sees the same library, whatever their customers are.
+    const top = await browse(asOther);
+    expect(top.path).toEqual([]);
+    expect(top.folders.map((folder) => folder.name)).toEqual(['Offers']);
+    expect(top.documents.map((item) => item.name)).toEqual(['Company brochure']);
+    const deep = await browse(asAsha, `?folderId=${year.id}`);
+    expect(deep.path.map((step) => step.name)).toEqual(['Offers', '2026']);
+    expect(deep.documents.map((item) => item.name)).toEqual(['Offer for presses']);
+    expect((await browse(asAsha, `?folderId=${offers.id}`)).folders).toMatchObject([
+      { name: '2026', documentCount: 1 },
+    ]);
+    // A search looks through every folder.
+    expect((await browse(asAsha, '?search=offer')).documents.map((item) => item.name)).toEqual([
+      'Offer for presses',
+    ]);
+    expect((await asCeo.get('/api/documents/folders')).body.data.map((item) => item.path)).toEqual([
+      'Offers',
+      'Offers / 2026',
+    ]);
 
-    // It goes out with a mail of someone who may see the company; not with anyone else's.
-    const send = (client) =>
-      client.post('/api/emails/send').send({
+    // Rename and move; a folder with something in it stays.
+    const moved = await asCeo
+      .patch(`/api/documents/${atTop.body.data.id}`)
+      .send({ name: 'Brochure 2026', folderId: offers.id });
+    expect(moved.body.data).toMatchObject({ name: 'Brochure 2026', folderId: offers.id });
+    expect(
+      (await asAsha.patch(`/api/documents/${atTop.body.data.id}`).send({ name: 'x' })).status,
+    ).toBe(403);
+    expect((await asCeo.delete(`/api/documents/folders/${year.id}`)).status).toBe(409);
+    expect((await asCeo.delete(`/api/documents/${inYear.body.data.id}`)).status).toBe(200);
+    expect((await asCeo.delete(`/api/documents/folders/${year.id}`)).status).toBe(200);
+    expect(
+      (await asCeo.patch(`/api/documents/folders/${offers.id}`).send({ name: 'Brochures' })).body
+        .data.name,
+    ).toBe('Brochures');
+  });
+
+  it('a document goes out with a mail to any customer; a deleted one does not', async () => {
+    const made = await upload(asCeo, { name: 'Company brochure' });
+    const send = () =>
+      asAsha.post('/api/emails/send').send({
         to: [CUSTOMER],
         subject: 'Our brochure',
         text: 'Please find our brochure.',
         attachments: [{ url: made.body.data.url }],
       });
-    expect((await send(asAsha)).status).toBe(200);
+    expect((await send()).status).toBe(200);
     expect(mailbox.lastSent.files).toEqual([
       {
         filename: 'brochure.pdf',
@@ -845,25 +891,8 @@ describe('documents of a company', () => {
         content: Buffer.from('%PDF brochure'),
       },
     ]);
-    const omar = await loadRequestUser((await User.findOne({ email: 'omar@engenx.in' }))._id);
-    await completeConnect(omar, {
-      accessToken: 'access',
-      refreshToken: 'refresh',
-      expiresInSec: 3600,
-      scopes: [
-        'https://www.googleapis.com/auth/gmail.modify',
-        'https://www.googleapis.com/auth/calendar.events',
-      ],
-      googleEmail: 'omar@engenx.in',
-      hostedDomain: 'engenx.in',
-    });
-    expect((await send(asOther)).status).toBe(400);
-
-    // Deleted: off the list, and no longer sent.
-    expect((await asOther.delete(`/api/documents/${made.body.data.id}`)).status).toBe(403);
     expect((await asCeo.delete(`/api/documents/${made.body.data.id}`)).status).toBe(200);
-    expect((await list(asAsha)).body.data).toEqual([]);
-    expect((await send(asAsha)).status).toBe(400);
+    expect((await send()).status).toBe(400);
   });
 });
 
