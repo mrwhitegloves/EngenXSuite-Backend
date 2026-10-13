@@ -117,10 +117,11 @@ function requestInsightRefresh({ opportunityId, accountId }) {
  * Put an entry that a record wrote (found by its ref) on other records: a call that was matched
  * to the wrong person, or to nobody. With no record left to show it on, the entry is removed.
  * @param {{ refCollection: string, refId: unknown, subtype?: string }} ref
- * @param {{ accountId?: unknown, contactId?: unknown, opportunityId?: unknown, title: string }} links
+ * @param {{ accountId?: unknown, contactId?: unknown, opportunityId?: unknown, title: string,
+ *           status?: string }} links  status: when the result of the event was corrected too
  * @returns {Promise<boolean>} false when there was no such entry
  */
-export async function relinkActivity(ref, { accountId, contactId, opportunityId, title }) {
+export async function relinkActivity(ref, { accountId, contactId, opportunityId, title, status }) {
   const filter = { refCollection: ref.refCollection, refId: ref.refId, subtype: ref.subtype };
   let found;
   if (!accountId && !contactId && !opportunityId) {
@@ -134,7 +135,7 @@ export async function relinkActivity(ref, { accountId, contactId, opportunityId,
         .map(([field]) => [field, '']),
     );
     const result = await Activity.updateOne(filter, {
-      $set: { ...set, title },
+      $set: { ...set, title, ...(status ? { status } : {}) },
       ...(Object.keys(unset).length ? { $unset: unset } : {}),
     });
     found = result.matchedCount > 0;

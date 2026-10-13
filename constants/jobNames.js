@@ -10,6 +10,8 @@ export const JOB_NAMES = {
   importRun: 'import.run',
   importUndo: 'import.undo',
   taskReminders: 'tasks.reminders',
+  callSettle: 'calls.settle',
+  callSettleSweep: 'calls.settle-sweep',
   insightRefresh: 'ai.insight-refresh',
   insightDaily: 'ai.insight-daily',
   emailSync: 'email.sync',

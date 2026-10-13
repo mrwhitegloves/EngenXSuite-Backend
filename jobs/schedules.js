@@ -90,6 +90,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every 10 minutes: the exact length and charge of finished calls, from Plivo's own record.
+    id: 'call-settle-sweep',
+    queue: 'integrations',
+    cron: '*/10 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.callSettleSweep,
+    isEnabled: () => Boolean(env.PLIVO_AUTH_ID && env.PLIVO_AUTH_TOKEN),
+  },
+  {
     // Every minute: task reminders and "overdue" notifications.
     id: 'task-reminders',
     queue: 'messaging',

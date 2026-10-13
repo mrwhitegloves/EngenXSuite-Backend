@@ -1,11 +1,15 @@
+import { env } from '../config/env.js';
+import { JOB_NAMES } from '../constants/jobNames.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { logger } from '../infra/logger.js';
+import { enqueue } from '../infra/queues.js';
 import { emitToAll } from '../infra/realtime.js';
 import { isStorageConfigured, toReadableUrl, uploadObject } from '../infra/storage.js';
 import {
   dialXml,
   downloadRecording,
   emptyXml,
+  getCallRecord,
   isPlivoConfigured,
   missingPlivoSettings,
   ourNumber,
@@ -607,10 +611,24 @@ const RESULT_WORDS = {
 function resultOf(call) {
   const dial = call.plivo?.dial;
   const hangup = call.plivo?.hangup;
-  const talked = dial?.DialStatus === 'completed' && seconds(dial.DialBLegDuration) > 0;
-  const cost = seconds(hangup?.TotalCost) + seconds(dial?.DialBLegTotalCost);
+  // Plivo's own record of each side, read a little after the hang-up (settleCall): the exact
+  // length and charge. Until then the callbacks have to do.
+  const { aLeg, bLeg } = call.plivo ?? {};
+  // "completed" on the dialled side means: the other person picked up. (Plivo does not send
+  // the length of that side with this callback, so the length must not decide it.)
+  const talked = dial?.DialStatus === 'completed';
+  const cost =
+    aLeg || bLeg
+      ? seconds(aLeg?.cost) + seconds(bLeg?.cost)
+      : seconds(hangup?.TotalCost) + seconds(dial?.DialBLegTotalCost);
+  const length =
+    seconds(bLeg?.durationSec) ||
+    seconds(dial?.DialBLegDuration) ||
+    // The whole call from Plivo's hang-up callback: a little long (it includes the ringing).
+    seconds(hangup?.BillDuration) ||
+    seconds(hangup?.Duration);
   const base = {
-    durationSec: talked ? seconds(dial.DialBLegDuration) : 0,
+    durationSec: talked ? length : 0,
     cost: cost || undefined,
   };
   if (talked) return { ...base, status: 'completed', hangupCause: hangup?.HangupCause };
@@ -694,6 +712,76 @@ async function finishCall(callId) {
   }
 }
 
+/**
+ * Read Plivo's own record of a finished call (both sides) and correct the call with it: the
+ * exact length and what Plivo charged, as its console shows them. A background job calls this
+ * a minute after the hang-up, and again later for calls whose record was not ready.
+ * @returns {Promise<'settled' | 'not ready' | 'skipped'>}
+ */
+export async function settleCall(callId) {
+  const call = await Call.findById(callId).lean();
+  if (!call?.endedAt || call.plivo?.settledAt) return 'skipped';
+  const sides = [call.plivoCallUuid, call.plivo?.dial?.DialBLegUUID].map((uuid) =>
+    uuid ? getCallRecord(String(uuid)) : null,
+  );
+  const [aLeg, bLeg] = await Promise.all(sides);
+  if (!aLeg && !bLeg) return 'not ready';
+  const result = resultOf({ ...call, plivo: { ...call.plivo, aLeg, bLeg } });
+  await Call.updateOne(
+    { _id: call._id },
+    { $set: { ...result, 'plivo.aLeg': aLeg, 'plivo.bLeg': bLeg, 'plivo.settledAt': new Date() } },
+  );
+  // The line on the timeline says the length: bring it in step.
+  if (call.contactId || call.accountId || call.opportunityId) {
+    const contact = call.contactId
+      ? await Contact.findById(call.contactId).select('name').lean()
+      : null;
+    const who = contact?.name ?? (call.direction === 'outbound' ? call.toNumber : call.fromNumber);
+    const entry = timelineEntry({ ...call, ...result }, who);
+    await relinkActivity(
+      { refCollection: 'calls', refId: call._id, subtype: 'call_ended' },
+      {
+        accountId: call.accountId,
+        contactId: call.contactId,
+        opportunityId: call.opportunityId,
+        title: entry.title,
+        status: entry.status,
+      },
+    );
+  }
+  announce();
+  return 'settled';
+}
+
+/**
+ * Every ten minutes: settle the calls of the last two weeks that are not settled yet (the
+ * queue was away, or Plivo's record was not ready a minute after the hang-up).
+ * @param {Date} [now]  Only tests pass it
+ */
+export async function settleWaitingCalls(now = new Date()) {
+  const waiting = await Call.find({
+    endedAt: {
+      $gt: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000),
+      $lt: new Date(now.getTime() - 60 * 1000),
+    },
+    plivoCallUuid: { $ne: null },
+    'plivo.settledAt': null,
+  })
+    .select('_id')
+    .sort({ endedAt: -1 })
+    .limit(25)
+    .lean();
+  let settled = 0;
+  for (const call of waiting) {
+    try {
+      if ((await settleCall(call._id)) === 'settled') settled += 1;
+    } catch (error) {
+      logger.warn({ err: error, callId: String(call._id) }, 'A call could not be settled');
+    }
+  }
+  return { looked: waiting.length, settled };
+}
+
 /** Keep a finished recording in our own storage. */
 async function storeRecording(call, params) {
   const url = params.RecordUrl ?? params.RecordFile;
@@ -755,6 +843,16 @@ async function processPlivoEvent(event) {
   } else if (kind === 'hangup') {
     await Call.updateOne({ _id: call._id }, { $set: { 'plivo.hangup': params } });
     await finishCall(call._id);
+    // Plivo's books are ready a little later: the exact length and charge are read then.
+    // (The automated tests call settleCall themselves; without a queue the sweep does it.)
+    if (env.NODE_ENV !== 'test') {
+      await enqueue(
+        'integrations',
+        JOB_NAMES.callSettle,
+        { callId: String(call._id) },
+        { delayMs: 60_000, jobId: `call-settle-${call._id}` },
+      ).catch(() => {});
+    }
   } else if (kind === 'recording') {
     await storeRecording(call, params);
   }
