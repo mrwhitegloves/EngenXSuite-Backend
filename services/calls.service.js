@@ -397,7 +397,8 @@ export async function getCallDetail(actor, callId) {
   const answered = plivoTime(hangup?.AnswerTime) ?? call.answeredAt ?? null;
   const ended = plivoTime(hangup?.EndTime) ?? call.endedAt ?? null;
   const isOutbound = call.direction === 'outbound';
-  const us = ourNumber();
+  // The company number, as this call itself has it (the setting may have changed since).
+  const us = isOutbound ? call.fromNumber : call.toNumber;
 
   // The two sides of the call, as Plivo lists them ("Self" and "Child").
   const legs = [
@@ -855,7 +856,7 @@ async function finishCall(callId) {
       type: 'call_missed',
       title: `Missed call from ${who}`,
       body: contact ? call.fromNumber : 'A number that is not in the CRM',
-      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : '/activities?view=calls',
+      link: call.opportunityId ? `/pipeline/${call.opportunityId}` : `/calls/${call._id}`,
       dedupeKey: `call-missed:${call._id}`,
     });
     // The call-back task. One per call: a second run finds it there already.
