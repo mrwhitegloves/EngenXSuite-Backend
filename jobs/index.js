@@ -1,7 +1,18 @@
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { runBackup, runBackupCleanupJob } from './backup.jobs.js';
+import {
+  runEmailFollowUpsJob,
+  runEmailSyncAllJob,
+  runEmailSyncJob,
+  runEmailWatchRenewJob,
+} from './emails.jobs.js';
 import { runImportJob, runImportUndoJob } from './imports.jobs.js';
 import { runInsightDailyJob, runInsightRefreshJob } from './insights.jobs.js';
+import {
+  runCalendarSyncAllJob,
+  runCalendarSyncJob,
+  runMeetingRemindersJob,
+} from './meetings.jobs.js';
 import { runPing } from './system.jobs.js';
 import { runTaskRemindersJob } from './tasks.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
@@ -26,4 +37,11 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.taskReminders]: runTaskRemindersJob,
   [JOB_NAMES.insightRefresh]: runInsightRefreshJob,
   [JOB_NAMES.insightDaily]: runInsightDailyJob,
+  [JOB_NAMES.emailSync]: runEmailSyncJob,
+  [JOB_NAMES.emailSyncAll]: runEmailSyncAllJob,
+  [JOB_NAMES.emailFollowUps]: runEmailFollowUpsJob,
+  [JOB_NAMES.emailWatchRenew]: runEmailWatchRenewJob,
+  [JOB_NAMES.calendarSync]: runCalendarSyncJob,
+  [JOB_NAMES.calendarSyncAll]: runCalendarSyncAllJob,
+  [JOB_NAMES.meetingReminders]: runMeetingRemindersJob,
 };

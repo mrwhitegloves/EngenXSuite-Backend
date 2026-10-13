@@ -36,6 +36,51 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every 3 minutes: read what is new in every connected mailbox.
+    id: 'email-sync-all',
+    queue: 'messaging',
+    cron: '*/3 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailSyncAll,
+    isEnabled: () => true,
+  },
+  {
+    // Every hour: start or renew the Gmail watch (push) of the mailboxes that need it.
+    id: 'email-watch-renew',
+    queue: 'integrations',
+    cron: '15 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailWatchRenew,
+    isEnabled: () => Boolean(env.GMAIL_PUSH_TOPIC && env.GMAIL_PUSH_TOKEN),
+  },
+  {
+    // Every morning at 09:30 India time: mails of ours that got no answer for 3 or 7 days.
+    id: 'email-follow-ups',
+    queue: 'messaging',
+    cron: '30 9 * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailFollowUps,
+    isEnabled: () => true,
+  },
+  {
+    // Every 5 minutes: take over what changed in every connected Google Calendar.
+    id: 'calendar-sync-all',
+    queue: 'integrations',
+    cron: '*/5 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.calendarSyncAll,
+    isEnabled: () => true,
+  },
+  {
+    // Every minute: reminders for meetings that start within half an hour.
+    id: 'meeting-reminders',
+    queue: 'messaging',
+    cron: '* * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.meetingReminders,
+    isEnabled: () => true,
+  },
+  {
     // Every morning at 06:30 India time: refresh the AI answers that have grown old.
     id: 'ai-insight-daily',
     queue: 'ai',
