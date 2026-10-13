@@ -122,6 +122,8 @@ describe('preferences', () => {
       ['email_received', true],
       // Added with the follow-up reminder (phase 06): my mail got no answer.
       ['email_follow_up', true],
+      // Added with WhatsApp (phase 07): a customer writes to me.
+      ['whatsapp_received', true],
       // Added with meetings (phase 06): an invitation from a colleague, and "starts soon".
       ['meeting_invite', true],
       ['meeting_reminder', true],

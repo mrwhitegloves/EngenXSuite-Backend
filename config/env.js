@@ -95,6 +95,16 @@ const envSchema = z.object({
   META_APP_SECRET: z.string().min(1).optional(),
   META_VERIFY_TOKEN: z.string().min(1).optional(),
   META_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
+  // WhatsApp Cloud API (docs/WHATSAPP.md). Without them WhatsApp is switched off.
+  //   WHATSAPP_PHONE_NUMBER_ID  the id of the number in Meta (not the phone number itself)
+  //   WHATSAPP_ACCESS_TOKEN     a permanent token of a system user with the WhatsApp permissions
+  //   WHATSAPP_VERIFY_TOKEN     any long random text; typed once into Meta when the webhook is set up
+  //   WHATSAPP_APP_SECRET       the secret of the Meta app that owns the number; left out when it
+  //                             is the same app as the lead ads (META_APP_SECRET is then used)
+  WHATSAPP_PHONE_NUMBER_ID: z.string().min(1).optional(),
+  WHATSAPP_ACCESS_TOKEN: z.string().min(1).optional(),
+  WHATSAPP_VERIFY_TOKEN: z.string().min(1).optional(),
+  WHATSAPP_APP_SECRET: z.string().min(1).optional(),
   META_GRAPH_VERSION: z
     .string()
     .regex(/^v\d+\.\d+$/, 'must look like v21.0')
