@@ -14,6 +14,8 @@ Object.assign(process.env, {
 // are the real ones.
 const placed = [];
 let plivoFails = false;
+// Plivo's own record of a finished leg (what its console shows), by the leg's UUID.
+const plivoRecords = new Map();
 vi.mock('../integrations/plivo/client.js', async (importActual) => ({
   ...(await importActual()),
   startCall: async (options) => {
@@ -25,6 +27,7 @@ vi.mock('../integrations/plivo/client.js', async (importActual) => ({
     placed.push(options);
     return { requestUuid: `request-${placed.length}` };
   },
+  getCallRecord: async (uuid) => plivoRecords.get(uuid) ?? null,
   isValidPlivoSignature: (req) => req.get('x-test-signature') === 'ok',
   downloadRecording: async () => ({ body: Buffer.from('mp3-bytes'), contentType: 'audio/mpeg' }),
 }));
@@ -58,6 +61,7 @@ const { Task } = await import('../models/task.model.js');
 const { User } = await import('../models/user.model.js');
 const { WebhookEvent } = await import('../models/webhookEvent.model.js');
 const { runSeed, seedStartingLists, seedStatusLists } = await import('../seeds/seed.js');
+const { settleCall, settleWaitingCalls } = await import('../services/calls.service.js');
 const { processWebhookEvent } = await import('../services/webhooks.service.js');
 const { clearTestDb, startTestDbWithTransactions, stopTestDb } =
   await import('./helpers/testDb.js');
@@ -288,6 +292,96 @@ describe('click-to-call', () => {
     }
     expect((await Call.findById(call.id).lean()).status).toBe('initiated');
     expect(await Call.countDocuments()).toBe(1);
+  });
+});
+
+describe('what Plivo really sends, and its own record of the call', () => {
+  it('a call the customer picked up is "completed" without a length in the dial callback', async () => {
+    plivoRecords.clear();
+    const callId = (await startCall(asAgent)).body.data.id;
+    await hook('connect', { CallUUID: 'request-1' }, { call: callId });
+    // Plivo's dial callback: how it ended and the ids of the two sides. No length, no cost.
+    await hook(
+      'dial-result',
+      {
+        CallUUID: 'request-1',
+        DialStatus: 'completed',
+        DialRingStatus: 'true',
+        DialHangupCause: 'NORMAL_CLEARING',
+        DialALegUUID: 'request-1',
+        DialBLegUUID: 'customer-leg-1',
+      },
+      { call: callId },
+    );
+    await hook(
+      'hangup',
+      {
+        CallUUID: 'request-1',
+        CallStatus: 'completed',
+        Duration: '52',
+        BillDuration: '60',
+        TotalCost: '0.19',
+      },
+      { call: callId },
+    );
+    // At once: it went through; the length is the whole call for now, the charge one side.
+    expect(await Call.findById(callId).lean()).toMatchObject({
+      status: 'completed',
+      durationSec: 60,
+      cost: 0.19,
+    });
+    expect((await Activity.findOne({ type: 'CALL' }).lean()).title).toBe(
+      'Call to Asha Verma · 1:00',
+    );
+
+    // Plivo's books are not ready yet.
+    expect(await settleCall(callId)).toBe('not ready');
+    // A little later they are: both sides, as the Plivo console shows them.
+    plivoRecords.set('request-1', { durationSec: 60, cost: 0.19, hangupCause: 'Normal Hangup' });
+    plivoRecords.set('customer-leg-1', {
+      durationSec: 31,
+      cost: 0.19,
+      hangupCause: 'Normal Hangup',
+    });
+    await Call.updateOne(
+      { _id: callId },
+      { $set: { endedAt: new Date(Date.now() - 5 * 60 * 1000) } },
+    );
+    expect(await settleWaitingCalls()).toEqual({ looked: 1, settled: 1 });
+    expect(await Call.findById(callId).lean()).toMatchObject({
+      status: 'completed',
+      durationSec: 31,
+      cost: 0.38,
+    });
+    const entry = await Activity.findOne({ type: 'CALL' }).lean();
+    expect(entry).toMatchObject({ title: 'Call to Asha Verma · 0:31', status: 'completed' });
+    // Settled once: nothing more to do.
+    expect(await settleCall(callId)).toBe('skipped');
+    expect(await settleWaitingCalls()).toEqual({ looked: 0, settled: 0 });
+  });
+
+  it('a call nobody picked up stays "no answer", with what the ringing cost', async () => {
+    plivoRecords.clear();
+    const callId = (await startCall(asAgent)).body.data.id;
+    await hook('connect', { CallUUID: 'request-1' }, { call: callId });
+    await hook(
+      'dial-result',
+      { CallUUID: 'request-1', DialStatus: 'no-answer', DialBLegUUID: 'customer-leg-2' },
+      { call: callId },
+    );
+    await hook(
+      'hangup',
+      { CallUUID: 'request-1', Duration: '30', TotalCost: '0.19' },
+      { call: callId },
+    );
+    plivoRecords.set('request-1', { durationSec: 60, cost: 0.19, hangupCause: 'Normal Hangup' });
+    plivoRecords.set('customer-leg-2', { durationSec: 0, cost: 0, hangupCause: 'No Answer' });
+    expect(await settleCall(callId)).toBe('settled');
+    expect(await Call.findById(callId).lean()).toMatchObject({
+      status: 'no_answer',
+      durationSec: 0,
+      cost: 0.19,
+    });
   });
 });
 

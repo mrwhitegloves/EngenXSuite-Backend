@@ -78,6 +78,31 @@ export async function startCall({ to, answerUrl, hangupUrl }) {
 }
 
 /**
+ * What Plivo's own books say about one finished leg of a call: how long it lasted and what it
+ * cost. This is what the Plivo console shows, and it is ready a short while after the hang-up.
+ * @param {string} uuid  The leg's call UUID
+ * @returns {Promise<{ durationSec: number, cost: number, hangupCause: string | null } | null>}
+ *          null when Plivo has no record of it (yet)
+ */
+export async function getCallRecord(uuid) {
+  try {
+    const record = await getClient().calls.get(uuid);
+    const pick = (camel, snake) => record?.[camel] ?? record?.[snake];
+    return {
+      durationSec:
+        Number(pick('billDuration', 'bill_duration') ?? pick('callDuration', 'call_duration')) || 0,
+      cost: Number(pick('totalAmount', 'total_amount')) || 0,
+      hangupCause: pick('hangupCauseName', 'hangup_cause_name') ?? null,
+    };
+  } catch (error) {
+    if (error?.isAppError) throw error;
+    if (error?.status === 404 || /not found/i.test(String(error?.message))) return null;
+    const reason = error?.message ? String(error.message).slice(0, 200) : 'unknown reason';
+    throw createAppError('PLIVO_ERROR', 502, `Plivo did not give the call record: ${reason}`);
+  }
+}
+
+/**
  * Check Plivo's signature on a webhook (signature version 3: an HMAC over the full address,
  * the form fields and a one-time value, made with the auth token).
  * @param {import('express').Request} req

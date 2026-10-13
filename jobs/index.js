@@ -14,6 +14,7 @@ import {
   runCalendarSyncJob,
   runMeetingRemindersJob,
 } from './meetings.jobs.js';
+import { runCallSettleJob, runCallSettleSweepJob } from './calls.jobs.js';
 import { runPing } from './system.jobs.js';
 import { runTaskRemindersJob } from './tasks.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
@@ -36,6 +37,8 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.importRun]: runImportJob,
   [JOB_NAMES.importUndo]: runImportUndoJob,
   [JOB_NAMES.taskReminders]: runTaskRemindersJob,
+  [JOB_NAMES.callSettle]: runCallSettleJob,
+  [JOB_NAMES.callSettleSweep]: runCallSettleSweepJob,
   [JOB_NAMES.insightRefresh]: runInsightRefreshJob,
   [JOB_NAMES.insightDaily]: runInsightDailyJob,
   [JOB_NAMES.emailSync]: runEmailSyncJob,
