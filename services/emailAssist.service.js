@@ -99,7 +99,7 @@ export async function assistOnThread(actor, threadId, request, now = new Date())
   }
   if (request.kind === 'review') {
     if (!request.draft) throw badRequest('Write the mail first.');
-    return (await reviewEmail({ ...base, draft: request.draft })).output;
+    return (await reviewEmail({ ...base, draft: request.draft, sender: actor.name })).output;
   }
   const [contact, account] = await Promise.all([
     thread.contactId ? Contact.findById(thread.contactId).select('name designation').lean() : null,

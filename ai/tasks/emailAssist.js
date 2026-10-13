@@ -159,12 +159,12 @@ export const emailReviewSchema = z.object({
   unansweredQuestions: lines(8),
 });
 
-export function reviewEmail({ messages, subject, draft, threadId, userId }) {
+export function reviewEmail({ messages, subject, draft, sender, threadId, userId }) {
   return run({
     task: 'reviewEmail',
     version: 'reviewEmail/v1',
     system: `${INTRO}
-You also get "draft": the mail the sales person is about to send. Check it before it goes out. Do NOT rewrite it.
+You also get "draft": the mail the sales person is about to send, and "sender": that person's full name (their name under the mail is right as it is, short or full). Check the draft before it goes out. Do NOT rewrite it.
 
 Look for:
 - "mistake": spelling, grammar, a wrong name, a wrong date, something that contradicts the conversation
@@ -180,7 +180,7 @@ ${COMMON}
 
 Answer with one JSON object and nothing else:
 { "isReadyToSend": true or false, "issues": [ { "kind": "mistake", "text": "…" } ], "unansweredQuestions": ["…"] }`,
-    input: { subject, conversation: messages, draft },
+    input: { subject, conversation: messages, sender, draft },
     schema: emailReviewSchema,
     threadId,
     userId,
