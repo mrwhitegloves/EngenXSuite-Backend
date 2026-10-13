@@ -403,6 +403,26 @@ describe('moving and closing', () => {
   });
 });
 
+describe('deleting a meeting', () => {
+  it('takes it out of the CRM and of Google Calendar; the timeline says so', async () => {
+    const meeting = (await asAsha.post('/api/meetings').send(plan())).body.data;
+    expect(meeting.permissions).toEqual({ canEdit: true, canDelete: true });
+    // Somebody who cannot see the lead does not reach it.
+    expect((await asOmar.delete(`/api/meetings/${meeting.id}`)).status).toBe(404);
+
+    const deleted = await asAsha.delete(`/api/meetings/${meeting.id}`);
+    expect(deleted.body.data).toEqual({ deleted: true });
+    expect(await Meeting.countDocuments()).toBe(0);
+    expect(googleCalls('DELETE').map((call) => call.path)).toEqual(['/events/g1']);
+    expect(await titlesOnTimeline()).toEqual([
+      'Meeting planned: Pilot scope',
+      'Meeting deleted: Pilot scope',
+    ]);
+    expect((await asAsha.get(`/api/meetings/${meeting.id}`)).status).toBe(404);
+    expect((await asAsha.delete(`/api/meetings/${meeting.id}`)).status).toBe(404);
+  });
+});
+
 describe('changes made in Google Calendar', () => {
   it('a new time, an answer and a cancellation come back into the CRM', async () => {
     const meeting = (await asAsha.post('/api/meetings').send(plan())).body.data;

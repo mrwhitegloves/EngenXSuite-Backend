@@ -12,6 +12,7 @@ import {
   postSummary,
   postSync,
   postTranscribe,
+  removeMeeting,
 } from '../controllers/meetings.controller.js';
 import { authorize } from '../middleware/authorize.js';
 import { createAiLimiter } from '../middleware/rateLimit.js';
@@ -47,6 +48,7 @@ router.patch(
   validate({ params: idParams, body: updateMeetingBody }),
   patchMeeting,
 );
+router.delete('/:id', authorize(FEATURE, 'delete'), validate({ params: idParams }), removeMeeting);
 router.post(
   '/:id/close',
   authorize(FEATURE, 'edit'),

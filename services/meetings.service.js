@@ -9,6 +9,7 @@ import { scopeFilter } from '../lib/scopeFilter.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { MEETING_MODES, Meeting } from '../models/meeting.model.js';
+import { MeetingSummary } from '../models/meetingSummary.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { User } from '../models/user.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
@@ -141,7 +142,7 @@ function toView(meeting, lookups, actor) {
     bookedVia: meeting.bookedVia,
     isInGoogleCalendar: Boolean(meeting.googleEventId),
     googleSyncError: meeting.googleSyncError ?? null,
-    permissions: { canEdit },
+    permissions: { canEdit, canDelete: allowed(actor, 'delete', meeting) },
   };
 }
 
@@ -491,6 +492,34 @@ export async function closeMeeting(actor, meetingId, change, context = {}) {
   });
   announce();
   return viewOf(meeting, actor);
+}
+
+/**
+ * Delete a meeting for good: it leaves the calendar, the CRM and (when it is still planned)
+ * Google Calendar, where the guests are told. The timeline keeps a line that it was deleted.
+ * To keep the record, cancel it instead.
+ * @param {{ tellGuests?: boolean }} [options]
+ */
+export async function deleteMeeting(actor, meetingId, options = {}, context = {}) {
+  const meeting = await loadMeetingForAction(actor, meetingId, 'delete');
+  if (meeting.status === 'scheduled') {
+    await pushToGoogle(meeting, 'remove', options.tellGuests ?? true);
+  }
+  await Meeting.deleteOne({ _id: meeting._id });
+  await MeetingSummary.deleteOne({ meetingId: meeting._id });
+  await onTimeline(meeting, actor._id, 'meeting_deleted', `Meeting deleted: ${meeting.title}`, {
+    content: `It was planned for ${timeOf(meeting.startAt)}.`,
+  });
+  await writeAudit({
+    actor,
+    action: 'meeting.deleted',
+    entityType: 'meetings',
+    entityId: meeting._id,
+    oldValue: { title: meeting.title, startAt: meeting.startAt, status: meeting.status },
+    requestId: context.requestId,
+  });
+  announce();
+  return { deleted: true };
 }
 
 /**

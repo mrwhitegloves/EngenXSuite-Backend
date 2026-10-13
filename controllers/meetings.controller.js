@@ -10,6 +10,7 @@ import {
 import {
   closeMeeting,
   createMeeting,
+  deleteMeeting,
   getMeeting,
   getMeetingFormOptions,
   listMeetings,
@@ -80,4 +81,9 @@ export async function postFile(req, res) {
 export async function postTranscribe(req, res) {
   const { params, body } = req.validated;
   sendOk(res, await transcribeMeetingFile(req.user, params.id, body));
+}
+
+// DELETE /api/meetings/:id: delete a meeting for good.
+export async function removeMeeting(req, res) {
+  sendOk(res, await deleteMeeting(req.user, req.validated.params.id, {}, { requestId: req.id }));
 }
