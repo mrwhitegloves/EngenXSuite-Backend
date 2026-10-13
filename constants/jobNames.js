@@ -15,6 +15,7 @@ export const JOB_NAMES = {
   emailSync: 'email.sync',
   emailSyncAll: 'email.sync-all',
   emailFollowUps: 'email.follow-ups',
+  emailWatchRenew: 'email.watch-renew',
   calendarSync: 'calendar.sync',
   calendarSyncAll: 'calendar.sync-all',
   meetingReminders: 'meetings.reminders',

@@ -34,6 +34,7 @@ const FIRST_SYNC_DAYS = 30;
 const FIRST_SYNC_MAX = 300;
 const CATCH_UP_DAYS = 7;
 const TEXT_MAX = 50_000;
+const HTML_MAX = 300_000;
 // Another run on the same mailbox counts as dead after this long.
 const SYNC_STALE_MS = 10 * 60 * 1000;
 // Not customer mail, whatever the addresses say.
@@ -189,6 +190,7 @@ export async function keepMessage(token, mailbox, messageId, options = {}) {
       sentAt: message.sentAt,
       snippet: message.snippet,
       text: message.text.slice(0, TEXT_MAX),
+      html: message.html ? message.html.slice(0, HTML_MAX) : undefined,
       attachments: message.attachments,
       messageIdHeader: message.messageIdHeader || undefined,
       references: message.references || undefined,

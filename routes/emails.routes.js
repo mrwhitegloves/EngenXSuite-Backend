@@ -15,6 +15,7 @@ import {
   postSync,
   postWrite,
 } from '../controllers/emails.controller.js';
+import { createWebhookHandler } from '../controllers/webhooks/receive.js';
 import { authorize } from '../middleware/authorize.js';
 import { createAiLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/requireAuth.js';
@@ -22,6 +23,7 @@ import { validate } from '../middleware/validate.js';
 import { idParams } from '../validation/common.js';
 import { singleFileUpload } from '../middleware/upload.js';
 import { MAX_UPLOAD_BYTES } from '../services/emailFiles.service.js';
+import { isValidGmailPushToken, readGmailPush } from '../services/emailPush.service.js';
 import {
   accountFilesQuery,
   assistBody,
@@ -100,6 +102,19 @@ router.post(
   aiLimiter,
   validate({ params: idParams, body: draftBody }),
   postDraft,
+);
+
+// Push from Gmail (/api/webhooks/google/gmail): Google Pub/Sub says that a mailbox changed.
+// No sign-in: the secret in the address is the check. The message carries no mail.
+export const googleWebhooksRouter = Router();
+googleWebhooksRouter.post(
+  '/gmail',
+  createWebhookHandler({
+    provider: 'gmail_push',
+    verify: (req) => isValidGmailPushToken(req.query.token),
+    getEventId: (req) => req.body?.message?.messageId,
+    getPayload: (req) => readGmailPush(req.body),
+  }),
 );
 
 export default router;

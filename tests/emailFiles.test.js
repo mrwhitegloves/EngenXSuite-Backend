@@ -9,7 +9,10 @@ Object.assign(process.env, {
   GOOGLE_WORKSPACE_CLIENT_SECRET: 'workspace-client-secret',
   ENCRYPTION_KEY: randomBytes(32).toString('base64'),
   OPENROUTER_API_KEY: 'test-openrouter-key',
+  GMAIL_PUSH_TOPIC: 'projects/test-project/topics/gmail-push',
+  GMAIL_PUSH_TOKEN: 'push-token-push-token-push-token',
 });
+const PUSH_TOKEN = 'push-token-push-token-push-token';
 
 const BUCKET_URL = 'https://test-bucket.s3.ap-south-1.amazonaws.com/';
 const stored = new Map();
@@ -38,7 +41,16 @@ const json = (body, status = 200) => new Response(JSON.stringify(body), { status
  * Put a message into the pretend mailbox.
  * @param {{ files?: { filename: string, mimeType: string, content: Buffer }[] }} mail
  */
-function deliver({ from, to = [OWN], subject = 'Hello', text = 'Hi', thread, labels, files = [] }) {
+function deliver({
+  from,
+  to = [OWN],
+  subject = 'Hello',
+  text = 'Hi',
+  html,
+  thread,
+  labels,
+  files = [],
+}) {
   mailbox.historyId += 1;
   const id = `m${mailbox.messages.length + 1}`;
   mailbox.messages.push({
@@ -58,6 +70,9 @@ function deliver({ from, to = [OWN], subject = 'Hello', text = 'Hi', thread, lab
       ],
       parts: [
         { mimeType: 'text/plain', body: { data: Buffer.from(text).toString('base64url') } },
+        ...(html
+          ? [{ mimeType: 'text/html', body: { data: Buffer.from(html).toString('base64url') } }]
+          : []),
         ...files.map((file, index) => {
           const attachmentId = `${id}-a${index + 1}`;
           mailbox.files.set(attachmentId, file.content);
@@ -119,6 +134,10 @@ vi.stubGlobal('fetch', async (input, options = {}) => {
   if (url.host !== 'gmail.googleapis.com') return json({});
   const path = url.pathname.replace('/gmail/v1/users/me', '');
   if (path === '/profile') return json({ emailAddress: OWN, historyId: String(mailbox.historyId) });
+  if (path === '/watch') {
+    mailbox.watchedTopic = JSON.parse(options.body).topicName;
+    return json({ historyId: '1', expiration: String(Date.now() + 7 * 24 * 3600 * 1000) });
+  }
   if (path === '/messages') {
     return json({
       messages: [...mailbox.messages].reverse().map(({ id, threadId }) => ({ id, threadId })),
@@ -779,5 +798,136 @@ describe('what a person decides about a conversation', () => {
     expect(
       (await asCeo.patch('/api/integrations/google/signature').send({ signature: 'x' })).status,
     ).toBe(409); // no connection
+  });
+});
+
+describe('documents of a company', () => {
+  it('are kept for the company, seen through it, and can go out with a mail', async () => {
+    const upload = (client) =>
+      client
+        .post('/api/documents')
+        .field('accountId', accountId)
+        .field('name', 'Company brochure')
+        .attach('file', Buffer.from('%PDF brochure'), {
+          filename: 'brochure.pdf',
+          contentType: 'application/pdf',
+        });
+    // A sales agent reads documents; adding them is for the manager line (by the roles).
+    expect((await upload(asAsha)).status).toBe(403);
+    const made = await upload(asCeo);
+    expect(made.status).toBe(201);
+    expect(made.body.data).toMatchObject({
+      name: 'Company brochure',
+      filename: 'brochure.pdf',
+      uploadedBy: 'Kunal CEO',
+    });
+    expect(made.body.data.url).toContain(`documents/${accountId}/`);
+    expect(made.body.data.link).toContain('X-Amz-Signature');
+
+    const list = (client) => client.get(`/api/documents?accountId=${accountId}`);
+    expect((await list(asAsha)).body.data.map((item) => item.name)).toEqual(['Company brochure']);
+    expect((await list(asOther)).status).toBe(404); // not his company
+    expect((await asAsha.get('/api/documents')).status).toBe(400);
+
+    // It goes out with a mail of someone who may see the company; not with anyone else's.
+    const send = (client) =>
+      client.post('/api/emails/send').send({
+        to: [CUSTOMER],
+        subject: 'Our brochure',
+        text: 'Please find our brochure.',
+        attachments: [{ url: made.body.data.url }],
+      });
+    expect((await send(asAsha)).status).toBe(200);
+    expect(mailbox.lastSent.files).toEqual([
+      {
+        filename: 'brochure.pdf',
+        mimeType: 'application/pdf',
+        content: Buffer.from('%PDF brochure'),
+      },
+    ]);
+    const omar = await loadRequestUser((await User.findOne({ email: 'omar@engenx.in' }))._id);
+    await completeConnect(omar, {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSec: 3600,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+      googleEmail: 'omar@engenx.in',
+      hostedDomain: 'engenx.in',
+    });
+    expect((await send(asOther)).status).toBe(400);
+
+    // Deleted: off the list, and no longer sent.
+    expect((await asOther.delete(`/api/documents/${made.body.data.id}`)).status).toBe(403);
+    expect((await asCeo.delete(`/api/documents/${made.body.data.id}`)).status).toBe(200);
+    expect((await list(asAsha)).body.data).toEqual([]);
+    expect((await send(asAsha)).status).toBe(400);
+  });
+});
+
+describe('a mail as its sender laid it out', () => {
+  it('the HTML form is kept next to the plain text', async () => {
+    deliver({
+      from: CUSTOMER,
+      subject: 'Offer',
+      text: 'Hello Asha',
+      html: '<p>Hello <b>Asha</b></p><script>alert(1)</script>',
+    });
+    deliver({ from: CUSTOMER, subject: 'Plain', text: 'Only text' });
+    await syncMailbox(asha._id);
+    const threads = await threadsOf(asAsha);
+    const byHtml = async (subject) =>
+      (await detailOf(asAsha, threads.find((thread) => thread.subject === subject).id)).messages[0];
+    // Kept as received: the screen cleans it and shows it in a closed frame.
+    expect(await byHtml('Offer')).toMatchObject({
+      text: 'Hello Asha',
+      html: '<p>Hello <b>Asha</b></p><script>alert(1)</script>',
+    });
+    expect((await byHtml('Plain')).html).toBeNull();
+  });
+});
+
+describe('push from Gmail', () => {
+  it('a mailbox is watched and the watch is renewed; a push reads that mailbox', async () => {
+    const { UserGoogleConnection } = await import('../models/userGoogleConnection.model.js');
+    const { WebhookEvent } = await import('../models/webhookEvent.model.js');
+    const { processWebhookEvent } = await import('../services/webhooks.service.js');
+    const { renewGmailWatches } = await import('../services/emailPush.service.js');
+
+    expect(await renewGmailWatches()).toEqual({ watched: 1 });
+    expect(mailbox.watchedTopic).toBe('projects/test-project/topics/gmail-push');
+    const connection = await UserGoogleConnection.findOne().lean();
+    expect(connection.gmail.watchExpiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 86400000);
+    expect(await renewGmailWatches()).toEqual({ watched: 0 }); // nothing is due
+    // Two days before it runs out, it is renewed.
+    const later = new Date(connection.gmail.watchExpiresAt.getTime() - 86400000);
+    expect(await renewGmailWatches(later)).toEqual({ watched: 1 });
+
+    // Google says the mailbox changed. The message holds no mail.
+    await syncMailbox(asha._id);
+    deliver({ from: CUSTOMER, subject: 'Pushed', text: 'Arrived just now' });
+    const push = (token) =>
+      request(app)
+        .post(`/api/webhooks/google/gmail?token=${token}`)
+        .send({
+          message: {
+            messageId: 'pubsub-1',
+            data: Buffer.from(JSON.stringify({ emailAddress: OWN, historyId: 999 })).toString(
+              'base64',
+            ),
+          },
+          subscription: 'projects/test-project/subscriptions/gmail-push',
+        });
+    expect((await push('a-wrong-token-a-wrong-token-1234')).status).toBe(401);
+    expect(await Email.countDocuments()).toBe(0);
+    expect((await push(PUSH_TOKEN)).status).toBe(200);
+    expect((await push(PUSH_TOKEN)).status).toBe(200); // the same message again: stored once
+    const events = await WebhookEvent.find({ provider: 'gmail_push', signatureValid: true }).lean();
+    expect(events).toHaveLength(1);
+    expect(events[0].payload).toEqual({ emailAddress: OWN, historyId: '999' });
+    await processWebhookEvent(events[0]._id);
+    expect((await Email.findOne().lean()).subject).toBe('Pushed');
   });
 });

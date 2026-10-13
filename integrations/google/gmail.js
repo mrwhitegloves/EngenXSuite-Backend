@@ -160,7 +160,7 @@ function readParts(payload) {
     for (const child of part.parts ?? []) walk(child);
   };
   walk(payload);
-  return { text: (plain.trim() || htmlToText(html)).trim(), attachments };
+  return { text: (plain.trim() || htmlToText(html)).trim(), html: html.trim(), attachments };
 }
 
 /**
@@ -170,7 +170,7 @@ function readParts(payload) {
  */
 export async function getMessage(token, id) {
   const message = await call(token, `/messages/${id}`, { query: { format: 'full' } });
-  const { text, attachments } = readParts(message.payload);
+  const { text, html, attachments } = readParts(message.payload);
   const from = headerOf(message, 'From');
   return {
     id: message.id,
@@ -183,6 +183,9 @@ export async function getMessage(token, id) {
     sentAt: new Date(Number(message.internalDate ?? Date.now())),
     snippet: String(message.snippet ?? '').slice(0, 300),
     text,
+    // The mail as its sender laid it out; empty for a plain-text mail. NOT safe to show as it
+    // is: the screen cleans it and shows it in a closed frame.
+    html,
     attachments,
     labels: message.labelIds ?? [],
     messageIdHeader: headerOf(message, 'Message-ID') || headerOf(message, 'Message-Id'),
@@ -259,4 +262,17 @@ export async function sendMessage(token, mail) {
     },
   });
   return { id: sent.id, threadId: sent.threadId };
+}
+
+/**
+ * Ask Gmail to publish every change of the mailbox to a Pub/Sub topic. Runs out after about
+ * seven days; calling it again renews it.
+ * @returns {Promise<{ historyId: string, expiresAt: Date }>}
+ */
+export async function watchMailbox(token, topicName) {
+  const answer = await call(token, '/watch', { method: 'POST', body: { topicName } });
+  return {
+    historyId: String(answer.historyId ?? ''),
+    expiresAt: new Date(Number(answer.expiration ?? Date.now())),
+  };
 }

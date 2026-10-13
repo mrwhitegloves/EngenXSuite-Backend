@@ -70,6 +70,8 @@ export async function getGoogleConnection(actor) {
           hasCalendar: connection.scopes.some((scope) => scope.includes('calendar')),
           mailLastSyncAt: connection.gmail?.lastSyncAt ?? null,
           signature: connection.signature ?? '',
+          // New mail is pushed by Google until then; empty: read every three minutes.
+          mailPushUntil: connection.gmail?.watchExpiresAt ?? null,
         }
       : null,
   };

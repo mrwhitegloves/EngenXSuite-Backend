@@ -45,6 +45,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every hour: start or renew the Gmail watch (push) of the mailboxes that need it.
+    id: 'email-watch-renew',
+    queue: 'integrations',
+    cron: '15 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.emailWatchRenew,
+    isEnabled: () => Boolean(env.GMAIL_PUSH_TOPIC && env.GMAIL_PUSH_TOKEN),
+  },
+  {
     // Every morning at 09:30 India time: mails of ours that got no answer for 3 or 7 days.
     id: 'email-follow-ups',
     queue: 'messaging',

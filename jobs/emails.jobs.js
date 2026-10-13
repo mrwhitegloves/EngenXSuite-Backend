@@ -1,7 +1,13 @@
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { enqueue } from '../infra/queues.js';
 import { runFollowUpReminders } from '../services/emailAssist.service.js';
+import { renewGmailWatches } from '../services/emailPush.service.js';
 import { connectedUserIds, syncMailbox } from '../services/emailSync.service.js';
+
+/** Every hour: start or renew the Gmail watch of the mailboxes that need it. */
+export async function runEmailWatchRenewJob() {
+  return renewGmailWatches();
+}
 
 /** Every morning: tell people about mails of theirs that got no answer for 3 or 7 days. */
 export async function runEmailFollowUpsJob() {

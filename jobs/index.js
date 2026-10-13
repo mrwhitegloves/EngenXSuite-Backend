@@ -1,6 +1,11 @@
 import { JOB_NAMES } from '../constants/jobNames.js';
 import { runBackup, runBackupCleanupJob } from './backup.jobs.js';
-import { runEmailFollowUpsJob, runEmailSyncAllJob, runEmailSyncJob } from './emails.jobs.js';
+import {
+  runEmailFollowUpsJob,
+  runEmailSyncAllJob,
+  runEmailSyncJob,
+  runEmailWatchRenewJob,
+} from './emails.jobs.js';
 import { runImportJob, runImportUndoJob } from './imports.jobs.js';
 import { runInsightDailyJob, runInsightRefreshJob } from './insights.jobs.js';
 import {
@@ -35,6 +40,7 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.emailSync]: runEmailSyncJob,
   [JOB_NAMES.emailSyncAll]: runEmailSyncAllJob,
   [JOB_NAMES.emailFollowUps]: runEmailFollowUpsJob,
+  [JOB_NAMES.emailWatchRenew]: runEmailWatchRenewJob,
   [JOB_NAMES.calendarSync]: runCalendarSyncJob,
   [JOB_NAMES.calendarSyncAll]: runCalendarSyncAllJob,
   [JOB_NAMES.meetingReminders]: runMeetingRemindersJob,

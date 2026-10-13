@@ -74,6 +74,9 @@ const emailSchema = new mongoose.Schema(
     snippet: { type: String, maxlength: 300 },
     // The readable text (plain), cut at 50,000 characters.
     text: { type: String },
+    // The mail as its sender laid it out (HTML), cut at 300,000 characters; empty for plain
+    // mail. Kept as received: the screen cleans it and shows it in a closed frame.
+    html: { type: String },
     // The files of the mail. Each is copied into our private bucket (emailFiles.service.js);
     // url is the address of that copy, and is missing when the file was too large to copy.
     attachments: {

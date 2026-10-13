@@ -16,6 +16,7 @@ import { PipelineStage } from '../models/pipelineStage.model.js';
 import { User } from '../models/user.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { loadAccountForAction } from './accounts.service.js';
+import { findSendableDocument } from './documents.service.js';
 import {
   MAX_SEND_BYTES,
   attachmentViews,
@@ -176,6 +177,7 @@ export async function getThread(actor, threadId) {
       cc: email.cc,
       sentAt: email.sentAt,
       text: email.text ?? '',
+      html: email.html ?? null,
       // Each with a link that opens for an hour.
       attachments: files[index],
     })),
@@ -240,6 +242,8 @@ async function readAttachments(actor, refs = []) {
         email &&
         (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleThreads(actor)] }));
       if (isVisible) meta = email.attachments.find((file) => file.url === ref.url);
+      // Or a document kept for a company the sender may see.
+      if (!meta) meta = await findSendableDocument(actor, ref.url);
     }
     const content = meta ? await readObject(key) : null;
     if (!content) throw badRequest('One of the files could not be found. Attach it again.');

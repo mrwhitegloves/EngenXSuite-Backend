@@ -12,6 +12,8 @@ export const WEBHOOK_PROVIDERS = [
   'meta_leads',
   'google',
   'email_provider',
+  // Google Pub/Sub says that a Gmail mailbox changed (docs/EMAIL.md, push).
+  'gmail_push',
   'website',
 ];
 export const WEBHOOK_STATUSES = ['received', 'queued', 'processed', 'failed', 'ignored'];

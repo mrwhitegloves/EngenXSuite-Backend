@@ -49,6 +49,17 @@ const envSchema = z.object({
     .refine((value) => Buffer.from(value, 'base64').length === 32, 'must be 32 bytes as base64')
     .optional(),
 
+  // Push from Gmail (docs/EMAIL.md). Optional as a pair: without them mail is read every three
+  // minutes as before.
+  //   GMAIL_PUSH_TOPIC  the Pub/Sub topic, "projects/<project id>/topics/<name>", in the SAME
+  //                     Google Cloud project as GOOGLE_WORKSPACE_CLIENT_ID
+  //   GMAIL_PUSH_TOKEN  any long random text; it is part of the address Pub/Sub calls
+  GMAIL_PUSH_TOPIC: z
+    .string()
+    .regex(/^projects\/[^/]+\/topics\/[^/]+$/, 'must look like projects/<id>/topics/<name>')
+    .optional(),
+  GMAIL_PUSH_TOKEN: z.string().min(24).optional(),
+
   // File storage (AWS S3). Optional as a group: without them uploads are switched off.
   AWS_S3_IAM_ACCESS_KEY_ID: z.string().min(1).optional(),
   AWS_S3_IAM_SECRET_ACCESS_KEY: z.string().min(1).optional(),
