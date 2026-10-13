@@ -18,6 +18,7 @@ import { Opportunity } from '../models/opportunity.model.js';
 import { User } from '../models/user.model.js';
 import { WhatsAppConversation, WhatsAppMessage } from '../models/whatsapp.model.js';
 import { recordActivity } from './activities.service.js';
+import { optOutByMessage } from './bulkOptOuts.service.js';
 import { notify } from './notifications.service.js';
 import { registerWebhookProcessor } from './webhooks.service.js';
 
@@ -145,6 +146,10 @@ async function receiveMessage(incoming, profileName) {
   } catch (error) {
     if (error?.code === 11000) return; // Meta sent it again
     throw error;
+  }
+  // "STOP" as the whole message: no bulk messages to this number any more.
+  if (/^(stop|unsubscribe)$/i.test(String(incoming.text?.body ?? '').trim())) {
+    await optOutByMessage(`+${waId}`);
   }
   await WhatsAppConversation.updateOne(
     { _id: conversation._id },

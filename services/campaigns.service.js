@@ -15,6 +15,7 @@ import { EmailThread } from '../models/email.model.js';
 import { User } from '../models/user.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { loadRequestUser } from './auth.service.js';
+import { cleanAddress, findOptedOut, isOptedOut, stopLinkFor } from './bulkOptOuts.service.js';
 import { createBundle, describeMembers, loadBundle } from './bundles.service.js';
 import { sendEmail, writeWithAi } from './emails.service.js';
 import { notify } from './notifications.service.js';
@@ -39,12 +40,28 @@ import { sendTemplateMessage } from './whatsapp.service.js';
 // fill in ("[price]") is never sent: that person fails, with the reason.
 //
 // A mail goes out from the Gmail of the person who made the sending. Only they can start it.
+//
+// NOBODY WHO SAID NO. An address or number on the "do not write to in bulk" list
+// (services/bulkOptOuts.service.js) is skipped, looked up again at the moment of sending. Every
+// mail ends with a line and a link to get on that list, unless the maker took the line out.
+//
+// LATER. A sending can be planned for a moment; the sweep job starts it then.
 
 const FEATURE = 'campaigns';
 const OWNERSHIP = { ownerField: 'createdBy' };
 const DAY_MS = 24 * 60 * 60 * 1000;
 // A recipient that stayed "sending" this long was cut off by a restart.
 const STUCK_MS = 10 * 60 * 1000;
+// A sending is planned at most this far ahead.
+const MAX_SCHEDULE_DAYS = 60;
+const SAID_NO = {
+  email:
+    'This address asked for no bulk mails (the list “Do not write to”). Write to them yourself if needed.',
+  whatsapp:
+    'This number asked for no bulk messages (the list “Do not write to”). Write to them yourself if needed.',
+};
+const stopLine = (email) =>
+  `If you do not want mails like this from us any more, open this link: ${stopLinkFor(email)}`;
 const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 const announce = () => emitToAll(SOCKET_EVENTS.campaignsChanged);
 const dayWords = (date) =>
@@ -100,12 +117,14 @@ function toView(campaign, counts, senders, actor) {
     body: campaign.body ?? null,
     minDaysBeforeReminder: campaign.minDaysBeforeReminder,
     attachments: campaign.attachments.map((file) => ({ filename: file.filename })),
+    addStopLine: campaign.channel === 'email' ? campaign.addStopLine !== false : null,
     templateName: campaign.templateName ?? null,
     templateLanguage: campaign.templateLanguage ?? null,
     templateParams: campaign.templateParams,
     sender: senders.get(String(campaign.createdBy)) ?? null,
     counts: counts(campaign._id),
     createdAt: campaign.createdAt,
+    scheduledAt: campaign.status === 'scheduled' ? (campaign.scheduledAt ?? null) : null,
     startedAt: campaign.startedAt ?? null,
     finishedAt: campaign.finishedAt ?? null,
     // Only the person whose mailbox it goes out from can start it or let it go on.
@@ -199,6 +218,7 @@ export async function createCampaign(actor, data, context = {}) {
           body: data.body,
           minDaysBeforeReminder: data.minDaysBeforeReminder,
           attachments: data.attachments ?? [],
+          addStopLine: data.addStopLine,
         }
       : {
           templateName: data.templateName,
@@ -208,6 +228,7 @@ export async function createCampaign(actor, data, context = {}) {
   });
   // Who cannot be written to at all is said right away, before anything is started.
   const address = (member) => (isMail ? member.email : member.phone);
+  const saidNo = await findOptedOut(data.channel, members.map(address));
   const seen = new Set();
   await CampaignRecipient.insertMany(
     members.map((member, order) => {
@@ -217,6 +238,8 @@ export async function createCampaign(actor, data, context = {}) {
         skip = isMail ? 'No email address is saved.' : 'No phone number is saved.';
       } else if (seen.has(address(member))) {
         skip = `The same ${isMail ? 'address' : 'number'} is in the bundle twice; it is written to once.`;
+      } else if (saidNo.has(cleanAddress(data.channel, address(member)))) {
+        skip = SAID_NO[data.channel];
       }
       if (address(member)) seen.add(address(member));
       return {
@@ -262,6 +285,7 @@ const UNATTENDED =
  * @returns {Promise<{ skip: string } | { action: 'reminder' | 'new', thread?: object }>}
  */
 async function decideMail(campaign, recipient, now) {
+  if (await isOptedOut('email', recipient.email)) return { skip: SAID_NO.email };
   const thread = await EmailThread.findOne({
     userId: campaign.createdBy,
     participants: recipient.email,
@@ -369,6 +393,9 @@ function plainReason(error) {
 
 async function handleRecipient(campaign, recipient, sender, now) {
   if (campaign.channel === 'whatsapp') {
+    if (await isOptedOut('whatsapp', recipient.phone)) {
+      return { status: 'skipped', reason: SAID_NO.whatsapp };
+    }
     await sendTemplateMessage(
       sender,
       {
@@ -394,18 +421,21 @@ async function handleRecipient(campaign, recipient, sender, now) {
       reason: `The AI left something to fill in (${leftOpen[0]}), so the mail was not sent. Write to this person yourself.`,
     };
   }
+  // The last line: how the reader stops such mails.
+  const text =
+    campaign.addStopLine === false ? mail.body : `${mail.body}\n\n${stopLine(recipient.email)}`;
   const sent = await sendEmail(sender, {
     ...(decision.action === 'reminder'
       ? { threadId: String(decision.thread._id) }
       : { to: [recipient.email], subject: mail.subject }),
-    text: mail.body,
+    text,
     ...(campaign.attachments.length ? { attachments: campaign.attachments } : {}),
   });
   return {
     status: 'sent',
     action: decision.action,
     subject: mail.subject,
-    body: mail.body,
+    body: text,
     threadId: sent.threadId ?? decision.thread?._id,
   };
 }
@@ -543,7 +573,46 @@ export async function sweepCampaigns(now = new Date()) {
       { jobId: `campaign-${campaign._id}-wake-${Math.floor(now / 60000)}` },
     ).catch(() => runCampaignStep(campaign._id));
   }
-  return { woken: asleep.length, cutOff: cut.modifiedCount };
+  const due = await Campaign.find({ status: 'scheduled', scheduledAt: { $lte: now } })
+    .select('_id')
+    .limit(50)
+    .lean();
+  for (const campaign of due) await beginScheduled(campaign._id, now);
+  return { woken: asleep.length, cutOff: cut.modifiedCount, started: due.length };
+}
+
+/**
+ * The moment of a planned sending has come. When it cannot go out (the mailbox is no longer
+ * connected), it waits as "paused" and its maker is told.
+ */
+async function beginScheduled(campaignId, now) {
+  const campaign = await Campaign.findOneAndUpdate(
+    { _id: campaignId, status: 'scheduled' },
+    { $set: { status: 'running', startedAt: now }, $unset: { pauseReason: '' } },
+    { returnDocument: 'after' },
+  ).lean();
+  if (!campaign) return;
+  try {
+    await assertCanSend(campaign);
+  } catch (error) {
+    const reason = `It could not start at the planned time. ${String(error?.message ?? '').slice(0, 200)}`;
+    await Campaign.updateOne(
+      { _id: campaign._id, status: 'running' },
+      { $set: { status: 'paused', pauseReason: reason }, $unset: { nextStepAt: '' } },
+    );
+    await notify({
+      userId: campaign.createdBy,
+      type: 'bulk_finished',
+      title: `Bulk sending did not start: ${campaign.name}`,
+      body: reason,
+      link: `/bulk?send=${campaign._id}`,
+      dedupeKey: `bulk-not-started:${campaign._id}`,
+    });
+    announce();
+    return;
+  }
+  await scheduleNext(campaign, 1000);
+  announce();
 }
 
 async function assertCanSend(campaign) {
@@ -560,16 +629,52 @@ async function assertCanSend(campaign) {
 }
 
 /**
- * Start a draft, or let a paused sending go on. Only its maker: it goes out in their name.
+ * Start a draft, or let a paused sending go on. With a time ("at"): plan a draft for that
+ * moment; it then starts by itself. Only its maker: it goes out in their name.
+ * @param {{ at?: Date }} [options]  Validated
+ * @param {Date} [now]  Only tests pass it
  */
-export async function startCampaign(actor, campaignId, context = {}) {
+export async function startCampaign(
+  actor,
+  campaignId,
+  context = {},
+  { at } = {},
+  now = new Date(),
+) {
   const campaign = await loadCampaign(actor, campaignId);
   if (!sameId(campaign.createdBy, actor._id)) {
     throw forbidden(
       'Only the person who made this sending can start it: it goes out in their name.',
     );
   }
-  if (!['draft', 'paused'].includes(campaign.status)) {
+  if (at) {
+    if (!['draft', 'scheduled'].includes(campaign.status)) {
+      throw conflict('Only a sending that has not started yet can be planned for later.');
+    }
+    if (at.getTime() < now.getTime() + 60 * 1000) {
+      throw badRequest('Choose a time that is still to come.');
+    }
+    if (at.getTime() > now.getTime() + MAX_SCHEDULE_DAYS * DAY_MS) {
+      throw badRequest(`Choose a time within the next ${MAX_SCHEDULE_DAYS} days.`);
+    }
+    await assertCanSend(campaign);
+    const planned = await Campaign.findOneAndUpdate(
+      { _id: campaign._id, status: campaign.status },
+      { $set: { status: 'scheduled', scheduledAt: at }, $unset: { pauseReason: '' } },
+    ).lean();
+    if (!planned) throw conflict('This sending is running already, or it is over.');
+    await writeAudit({
+      actor,
+      action: 'campaign.scheduled',
+      entityType: 'campaigns',
+      entityId: campaign._id,
+      newValue: { scheduledAt: at },
+      requestId: context.requestId,
+    });
+    announce();
+    return getCampaign(actor, campaign._id);
+  }
+  if (!['draft', 'scheduled', 'paused'].includes(campaign.status)) {
     throw conflict('This sending is running already, or it is over.');
   }
   await assertCanSend(campaign);
@@ -577,14 +682,14 @@ export async function startCampaign(actor, campaignId, context = {}) {
     { _id: campaign._id, status: campaign.status },
     {
       $set: { status: 'running', startedAt: campaign.startedAt ?? new Date() },
-      $unset: { pauseReason: '' },
+      $unset: { pauseReason: '', scheduledAt: '' },
     },
     { returnDocument: 'after' },
   ).lean();
   if (!started) throw conflict('This sending is running already, or it is over.');
   await writeAudit({
     actor,
-    action: campaign.status === 'draft' ? 'campaign.started' : 'campaign.resumed',
+    action: campaign.status === 'paused' ? 'campaign.resumed' : 'campaign.started',
     entityType: 'campaigns',
     entityId: campaign._id,
     requestId: context.requestId,
@@ -594,28 +699,40 @@ export async function startCampaign(actor, campaignId, context = {}) {
   return getCampaign(actor, campaign._id);
 }
 
-/** Pause a running sending, or cancel one that is not over (the rest is then never sent). */
+/**
+ * Pause a running sending, cancel one that is not over (the rest is then never sent), or take
+ * the plan off a scheduled one (it is a draft again).
+ */
 export async function stopCampaign(actor, campaignId, { action }, context = {}) {
   const campaign = await loadCampaign(actor, campaignId);
-  const from = action === 'pause' ? ['running'] : ['draft', 'running', 'paused'];
-  const changed = await Campaign.findOneAndUpdate(
-    { _id: campaign._id, status: { $in: from } },
-    {
-      $set:
-        action === 'pause'
-          ? { status: 'paused', pauseReason: `Paused by ${actor.name}.` }
-          : { status: 'cancelled', finishedAt: new Date() },
-      $unset: { nextStepAt: '' },
+  const how = {
+    pause: {
+      from: ['running'],
+      set: { status: 'paused', pauseReason: `Paused by ${actor.name}.` },
+      refused: 'This sending is not running.',
+      audit: 'campaign.paused',
     },
+    cancel: {
+      from: ['draft', 'scheduled', 'running', 'paused'],
+      set: { status: 'cancelled', finishedAt: new Date() },
+      refused: 'This sending is over already.',
+      audit: 'campaign.cancelled',
+    },
+    unschedule: {
+      from: ['scheduled'],
+      set: { status: 'draft' },
+      refused: 'This sending is not planned for later.',
+      audit: 'campaign.unscheduled',
+    },
+  }[action];
+  const changed = await Campaign.findOneAndUpdate(
+    { _id: campaign._id, status: { $in: how.from } },
+    { $set: how.set, $unset: { nextStepAt: '', scheduledAt: '' } },
   ).lean();
-  if (!changed) {
-    throw conflict(
-      action === 'pause' ? 'This sending is not running.' : 'This sending is over already.',
-    );
-  }
+  if (!changed) throw conflict(how.refused);
   await writeAudit({
     actor,
-    action: action === 'pause' ? 'campaign.paused' : 'campaign.cancelled',
+    action: how.audit,
     entityType: 'campaigns',
     entityId: campaign._id,
     requestId: context.requestId,

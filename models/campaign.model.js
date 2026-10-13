@@ -7,9 +7,17 @@ import mongoose from 'mongoose';
 const { ObjectId } = mongoose.Schema.Types;
 
 export const CAMPAIGN_CHANNELS = ['email', 'whatsapp'];
-// draft: made, not started. running: sending. paused: stopped by a person or by a problem
-// that concerns everyone (mailbox not connected, AI limit). finished: everyone was handled.
-export const CAMPAIGN_STATUSES = ['draft', 'running', 'paused', 'finished', 'cancelled'];
+// draft: made, not started. scheduled: starts by itself at scheduledAt. running: sending.
+// paused: stopped by a person or by a problem that concerns everyone (mailbox not connected,
+// AI limit). finished: everyone was handled.
+export const CAMPAIGN_STATUSES = [
+  'draft',
+  'scheduled',
+  'running',
+  'paused',
+  'finished',
+  'cancelled',
+];
 // pending: still to do. sending: being sent this moment. sent / failed / skipped: done.
 export const RECIPIENT_STATUSES = ['pending', 'sending', 'sent', 'failed', 'skipped'];
 
@@ -41,12 +49,16 @@ const campaignSchema = new mongoose.Schema(
       type: [{ _id: false, url: String, filename: String, mimeType: String }],
       default: [],
     },
+    // A last line in every mail with a link to stop such mails (docs/BULK.md).
+    addStopLine: { type: Boolean, default: true },
 
     // ── WhatsApp: an approved template, with the texts for its {{1}}, {{2}} … places.
     templateName: { type: String, maxlength: 120 },
     templateLanguage: { type: String, maxlength: 20 },
     templateParams: { type: [String], default: [] },
 
+    // When a scheduled sending starts by itself.
+    scheduledAt: { type: Date },
     startedAt: { type: Date },
     finishedAt: { type: Date },
     // When the next person is due; the sweep job starts a sending that fell asleep.
@@ -56,6 +68,7 @@ const campaignSchema = new mongoose.Schema(
 );
 campaignSchema.index({ createdBy: 1, createdAt: -1 });
 campaignSchema.index({ status: 1, nextStepAt: 1 });
+campaignSchema.index({ status: 1, scheduledAt: 1 });
 
 const campaignRecipientSchema = new mongoose.Schema(
   {

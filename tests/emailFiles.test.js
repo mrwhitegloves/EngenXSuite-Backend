@@ -1209,4 +1209,185 @@ describe('bulk mail', () => {
     expect(preview.sample.body).toContain('Regards');
     expect(mailbox.messages).toHaveLength(before); // nothing was sent
   });
+
+  // Only Nina Shah can be written to: everyone else is skipped by the mail rules.
+  const onlyNina = {
+    writeMode: 'fixed',
+    brief: undefined,
+    subject: 'A demo',
+    body: 'Dear {{name}},\n\nMay we show you our dashboard?',
+    minDaysBeforeReminder: 60,
+  };
+
+  it('ends a mail with a link to stop such mails; whoever used it is skipped from then on', async () => {
+    const id = (await newSending(onlyNina)).body.data.id;
+    // A second one, made before she says no.
+    const madeBefore = (await newSending({ ...onlyNina, name: 'Made before' })).body.data.id;
+    await asCeo.post(`/api/campaigns/${id}/start`);
+    await runToEnd(id);
+    const nina = byName(await recipientsOf(id))['Nina Shah'];
+    expect(nina.status).toBe('sent');
+    expect(nina.body).toContain('If you do not want mails like this from us any more');
+    const token = /\/stop-mail\/(\S+)/.exec(nina.body)[1];
+    // The line is in the mail that went out, not only in the list.
+    const kept = await Email.findOne({ direction: 'outbound' }).sort({ _id: -1 }).lean();
+    expect(kept.text).toContain(`/stop-mail/${token}`);
+
+    // The page behind the link needs no sign-in, and works only for a genuine link.
+    const page = await request(app).get(`/api/public/stop-mail/${token}`);
+    expect(page.body.data).toEqual({ email: 'nina@nova.example', isStopped: false });
+    const forged = `${Buffer.from('ravi@shakti.example').toString('base64url')}.${token.split('.')[1]}`;
+    expect((await request(app).get(`/api/public/stop-mail/${forged}`)).status).toBe(404);
+    expect((await request(app).post(`/api/public/stop-mail/${forged}`)).status).toBe(404);
+    expect((await request(app).get('/api/public/stop-mail/nonsense')).status).toBe(400);
+
+    const stopped = await request(app).post(`/api/public/stop-mail/${token}`);
+    expect(stopped.body.data).toEqual({ email: 'nina@nova.example', isStopped: true });
+    await request(app).post(`/api/public/stop-mail/${token}`); // twice changes nothing
+    const list = (await asCeo.get('/api/campaigns/opt-outs')).body.data;
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      channel: 'email',
+      address: 'nina@nova.example',
+      source: 'link',
+      addedBy: null,
+    });
+
+    // A sending made earlier looks again at the moment of sending.
+    const before = mailbox.messages.length;
+    await asCeo.post(`/api/campaigns/${madeBefore}/start`);
+    await runToEnd(madeBefore);
+    expect(mailbox.messages).toHaveLength(before);
+    expect(byName(await recipientsOf(madeBefore))['Nina Shah']).toMatchObject({
+      status: 'skipped',
+      reason: expect.stringContaining('asked for no bulk mails'),
+    });
+    // A new sending says so right away.
+    const next = (await newSending(onlyNina)).body.data;
+    expect(next.counts).toMatchObject({ total: 5, pending: 3, skipped: 2 });
+    // A single, normal mail to her still goes out.
+    const single = await asCeo
+      .post('/api/emails/send')
+      .send({ to: ['nina@nova.example'], subject: 'About your question', text: 'Hello Nina' });
+    expect(single.status).toBe(200);
+  });
+
+  it('the list of who gets no bulk messages is kept by the people who send in bulk', async () => {
+    const added = await asCeo
+      .post('/api/campaigns/opt-outs')
+      .send({ channel: 'email', address: ' Nina@Nova.example ', note: 'Asked on the phone' });
+    expect(added.status).toBe(201);
+    expect(added.body.data).toEqual({ channel: 'email', address: 'nina@nova.example' });
+    await asCeo
+      .post('/api/campaigns/opt-outs')
+      .send({ channel: 'whatsapp', address: '98111 12222' });
+    expect(
+      (await asCeo.post('/api/campaigns/opt-outs').send({ channel: 'email', address: 'not mail' }))
+        .status,
+    ).toBe(400);
+    expect(
+      (await asCeo.post('/api/campaigns/opt-outs').send({ channel: 'whatsapp', address: 'abc' }))
+        .status,
+    ).toBe(400);
+    const list = (await asCeo.get('/api/campaigns/opt-outs')).body.data;
+    expect(list.map((row) => [row.channel, row.address, row.source, row.addedBy]).sort()).toEqual([
+      ['email', 'nina@nova.example', 'person', 'Kunal CEO'],
+      ['whatsapp', '+919811112222', 'person', 'Kunal CEO'],
+    ]);
+    expect((await asCeo.get('/api/campaigns/opt-outs?search=nova')).body.data).toHaveLength(1);
+    expect((await asCeo.get('/api/campaigns/opt-outs?channel=whatsapp')).body.data).toHaveLength(1);
+    // A person without bulk sending does not see or change it.
+    expect((await asAsha.get('/api/campaigns/opt-outs')).status).toBe(403);
+
+    // Taken off the list, she gets the mail again; the maker left the last line out.
+    const id = (await newSending({ ...onlyNina, addStopLine: false })).body.data.id;
+    expect(byName(await recipientsOf(id))['Nina Shah'].status).toBe('skipped');
+    const row = list.find((item) => item.channel === 'email');
+    expect((await asCeo.delete(`/api/campaigns/opt-outs/${row.id}`)).status).toBe(200);
+    expect((await asCeo.delete(`/api/campaigns/opt-outs/${row.id}`)).status).toBe(404);
+    const again = (await newSending({ ...onlyNina, addStopLine: false })).body.data;
+    expect(again.addStopLine).toBe(false);
+    await asCeo.post(`/api/campaigns/${again.id}/start`);
+    await runToEnd(again.id);
+    const nina = byName(await recipientsOf(again.id))['Nina Shah'];
+    expect(nina.status).toBe('sent');
+    expect(nina.body).toBe('Dear Nina Shah,\n\nMay we show you our dashboard?');
+  });
+
+  it('is planned for a later moment and then starts by itself', async () => {
+    const { sweepCampaigns } = await import('../services/campaigns.service.js');
+    const HOUR = 3600 * 1000;
+    const id = (await newSending(onlyNina)).body.data.id;
+    const start = (body) => asCeo.post(`/api/campaigns/${id}/start`).send(body);
+    const statusOf = async () => (await asCeo.get(`/api/campaigns/${id}`)).body.data.status;
+    const before = mailbox.messages.length;
+
+    expect((await start({ at: new Date(Date.now() - HOUR) })).status).toBe(400);
+    expect((await start({ at: new Date(Date.now() + 90 * 24 * HOUR) })).status).toBe(400);
+    expect((await start({ at: 'tomorrow morning' })).status).toBe(400);
+    const at = new Date(Date.now() + 2 * HOUR);
+    const planned = await start({ at });
+    expect(planned.body.data).toMatchObject({ status: 'scheduled', scheduledAt: at.toISOString() });
+    // Nothing goes out before its time.
+    expect(await runCampaignStep(id)).toBe('idle');
+    expect((await sweepCampaigns()).started).toBe(0);
+    expect(await statusOf()).toBe('scheduled');
+    expect(mailbox.messages).toHaveLength(before);
+
+    // The plan is taken off (a draft again), and made again for another moment.
+    const draft = await asCeo.post(`/api/campaigns/${id}/stop`).send({ action: 'unschedule' });
+    expect(draft.body.data).toMatchObject({ status: 'draft', scheduledAt: null });
+    expect(
+      (await asCeo.post(`/api/campaigns/${id}/stop`).send({ action: 'unschedule' })).status,
+    ).toBe(409);
+    const later = new Date(Date.now() + 3 * HOUR);
+    await start({ at });
+    expect((await start({ at: later })).body.data.scheduledAt).toBe(later.toISOString());
+    expect((await sweepCampaigns(new Date(at.getTime() + 1000))).started).toBe(0);
+
+    // Its moment comes.
+    expect((await sweepCampaigns(new Date(later.getTime() + 1000))).started).toBe(1);
+    expect(await statusOf()).toBe('running');
+    expect((await runToEnd(id)).at(-1)).toBe('finished');
+    expect(byName(await recipientsOf(id))['Nina Shah'].status).toBe('sent');
+    expect(mailbox.messages).toHaveLength(before + 1);
+    // Once it ran, it cannot be planned.
+    expect((await start({ at: new Date(Date.now() + HOUR) })).status).toBe(409);
+
+    // A planned one can be started at once, or cancelled.
+    const second = (await newSending({ ...onlyNina, name: 'Second' })).body.data.id;
+    await asCeo.post(`/api/campaigns/${second}/start`).send({ at });
+    expect((await asCeo.post(`/api/campaigns/${second}/start`)).body.data).toMatchObject({
+      status: 'running',
+      scheduledAt: null,
+    });
+    const third = (await newSending({ ...onlyNina, name: 'Third' })).body.data.id;
+    await asCeo.post(`/api/campaigns/${third}/start`).send({ at });
+    expect(
+      (await asCeo.post(`/api/campaigns/${third}/stop`).send({ action: 'cancel' })).body.data
+        .status,
+    ).toBe('cancelled');
+    expect((await sweepCampaigns(new Date(later.getTime() + 1000))).started).toBe(0);
+  });
+
+  it('a planned sending whose mailbox is gone at its moment waits, and its maker is told', async () => {
+    const { sweepCampaigns } = await import('../services/campaigns.service.js');
+    const { UserGoogleConnection } = await import('../models/userGoogleConnection.model.js');
+    const id = (await newSending(onlyNina)).body.data.id;
+    const at = new Date(Date.now() + 3600 * 1000);
+    await asCeo.post(`/api/campaigns/${id}/start`).send({ at });
+    await UserGoogleConnection.deleteMany({ userId: ceoId });
+    const before = mailbox.messages.length;
+
+    await sweepCampaigns(new Date(at.getTime() + 1000));
+    const waiting = (await asCeo.get(`/api/campaigns/${id}`)).body.data;
+    expect(waiting.status).toBe('paused');
+    expect(waiting.pauseReason).toMatch(
+      /^It could not start at the planned time\. Connect your Gmail/,
+    );
+    expect(await runCampaignStep(id)).toBe('idle');
+    expect(mailbox.messages).toHaveLength(before);
+    const told = await Notification.find({ type: 'bulk_finished' }).lean();
+    expect(told.map((item) => item.title)).toEqual(['Bulk sending did not start: October round']);
+  });
 });

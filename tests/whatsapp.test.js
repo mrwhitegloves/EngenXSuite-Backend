@@ -339,4 +339,41 @@ describe('a bulk WhatsApp template', () => {
       'WhatsApp to Rajesh Patil',
     ]);
   });
+
+  it('never goes to a number that wrote STOP', async () => {
+    const { runCampaignStep } = await import('../services/campaigns.service.js');
+    // "Please stop calling" is a normal message; STOP alone means no bulk messages.
+    await deliver(incoming(CUSTOMER, 'Please stop calling in the evening'));
+    expect((await asCeo.get('/api/campaigns/opt-outs')).body.data).toHaveLength(0);
+    await deliver(incoming(CUSTOMER, ' Stop '));
+    expect((await asCeo.get('/api/campaigns/opt-outs')).body.data).toMatchObject([
+      { channel: 'whatsapp', address: `+${CUSTOMER}`, source: 'message' },
+    ]);
+
+    const account = (await asCeo.get('/api/accounts?search=Shakti')).body.data[0];
+    const bundle = (
+      await asCeo
+        .post('/api/bundles')
+        .send({ name: 'Foundries', accountIds: [account.id], includeCompany: false })
+    ).body.data;
+    const sending = await asCeo.post('/api/campaigns').send({
+      name: 'Diwali greeting',
+      channel: 'whatsapp',
+      bundleId: bundle.id,
+      gapSeconds: 10,
+      templateName: 'festival_greeting',
+      templateLanguage: 'en',
+    });
+    expect(sending.body.data.counts).toMatchObject({ total: 1, pending: 0, skipped: 1 });
+    const id = sending.body.data.id;
+    const sentBefore = meta.sent.length;
+    await asCeo.post(`/api/campaigns/${id}/start`);
+    expect(await runCampaignStep(id)).toBe('finished');
+    expect(meta.sent).toHaveLength(sentBefore);
+    const rows = (await asCeo.get(`/api/campaigns/${id}/recipients`)).body.data;
+    expect(rows[0]).toMatchObject({
+      status: 'skipped',
+      reason: expect.stringContaining('asked for no bulk messages'),
+    });
+  });
 });

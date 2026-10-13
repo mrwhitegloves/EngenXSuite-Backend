@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { OPT_OUT_CHANNELS } from '../models/bulkOptOut.model.js';
 import { RECIPIENT_STATUSES } from '../models/campaign.model.js';
 import { objectId, pagination } from './common.js';
 
@@ -27,6 +28,8 @@ const mail = z
     // The fixed text; {{name}} and {{company}} are filled in.
     body: z.string().trim().max(8000).optional(),
     minDaysBeforeReminder: z.number().int().min(0).max(60).default(3),
+    // A last line in every mail with a link to stop such mails.
+    addStopLine: z.boolean().default(true),
     // Files from Documents that go with every mail.
     attachments: z
       .array(
@@ -62,7 +65,30 @@ const whatsapp = z.object({
 });
 
 export const createCampaignBody = z.union([mail, whatsapp]);
-export const stopCampaignBody = z.object({ action: z.enum(['pause', 'cancel']) });
+// Without a time it starts now; with one it starts by itself at that moment.
+export const startCampaignBody = z.object({ at: z.coerce.date().optional() });
+// unschedule: a planned sending becomes a draft again.
+export const stopCampaignBody = z.object({ action: z.enum(['pause', 'cancel', 'unschedule']) });
+
+// "Do not write to in bulk".
+export const listOptOutsQuery = z.object({
+  ...pagination,
+  search: z.string().trim().max(100).optional(),
+  channel: z.enum(OPT_OUT_CHANNELS).optional(),
+});
+export const addOptOutBody = z.object({
+  channel: z.enum(OPT_OUT_CHANNELS),
+  // An email address, or a phone number.
+  address: z.string().trim().min(3, 'Write the address or the number').max(320),
+  note: z.string().trim().max(300).optional(),
+});
+// The link at the foot of a bulk mail: "<address>.<signature>".
+export const stopTokenParams = z.object({
+  token: z
+    .string()
+    .max(700)
+    .regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/, 'This link is not valid'),
+});
 export const bundleFromUnsentBody = z.object({
   name: z.string().trim().min(1, 'Give the bundle a name').max(120),
   statuses: z

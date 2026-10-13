@@ -1,10 +1,13 @@
 import { Router } from 'express';
 import {
+  deleteOptOut,
   getCampaignById,
   getCampaigns,
+  getOptOuts,
   getRecipients,
   postBundleFromUnsent,
   postCampaign,
+  postOptOut,
   postPreview,
   postStart,
   postStop,
@@ -14,10 +17,13 @@ import { createAiLimiter } from '../middleware/rateLimit.js';
 import { requireAuth } from '../middleware/requireAuth.js';
 import { validate } from '../middleware/validate.js';
 import {
+  addOptOutBody,
   bundleFromUnsentBody,
   createCampaignBody,
   listCampaignsQuery,
+  listOptOutsQuery,
   listRecipientsQuery,
+  startCampaignBody,
   stopCampaignBody,
 } from '../validation/campaigns.js';
 import { idParams } from '../validation/common.js';
@@ -36,6 +42,20 @@ router.post(
   validate({ body: createCampaignBody }),
   postCampaign,
 );
+// "Do not write to in bulk": one list for the whole company.
+router.get(
+  '/opt-outs',
+  authorize(FEATURE, 'view'),
+  validate({ query: listOptOutsQuery }),
+  getOptOuts,
+);
+router.post(
+  '/opt-outs',
+  authorize(FEATURE, 'create'),
+  validate({ body: addOptOutBody }),
+  postOptOut,
+);
+router.delete('/opt-outs/:id', authorize(FEATURE, 'edit'), byId, deleteOptOut);
 router.get('/:id', authorize(FEATURE, 'view'), byId, getCampaignById);
 router.get(
   '/:id/recipients',
@@ -44,7 +64,12 @@ router.get(
   getRecipients,
 );
 router.post('/:id/preview', authorize(FEATURE, 'create'), createAiLimiter(), byId, postPreview);
-router.post('/:id/start', authorize(FEATURE, 'create'), byId, postStart);
+router.post(
+  '/:id/start',
+  authorize(FEATURE, 'create'),
+  validate({ params: idParams, body: startCampaignBody }),
+  postStart,
+);
 router.post(
   '/:id/stop',
   authorize(FEATURE, 'edit'),
