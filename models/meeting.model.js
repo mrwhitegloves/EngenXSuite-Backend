@@ -29,7 +29,7 @@ const meetingSchema = new mongoose.Schema(
     // Whose meeting it is, and whose Google Calendar holds it.
     organizerId: { type: ObjectId, ref: 'User', required: true },
     internalAttendeeIds: { type: [ObjectId], ref: 'User', default: [] },
-    // The customer's people.
+    // The guests from outside: people of the customer (with contactId) and anyone else by email.
     attendees: {
       type: [
         {
@@ -41,6 +41,12 @@ const meetingSchema = new mongoose.Schema(
         },
       ],
       default: [],
+    },
+    // What the guests may do with the event in Google Calendar (as in Google's own form).
+    guestOptions: {
+      canInviteOthers: { type: Boolean, default: true },
+      canModify: { type: Boolean, default: false },
+      canSeeGuests: { type: Boolean, default: true },
     },
     accountId: { type: ObjectId, ref: 'Account' },
     opportunityId: { type: ObjectId, ref: 'Opportunity' },

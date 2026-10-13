@@ -73,8 +73,18 @@ function toBody(meeting) {
     start: { dateTime: meeting.startAt.toISOString() },
     end: { dateTime: meeting.endAt.toISOString() },
     attendees: meeting.guests.map((guest) => ({ email: guest.email, displayName: guest.name })),
+    guestsCanInviteOthers: meeting.guestOptions?.canInviteOthers ?? true,
+    guestsCanModify: meeting.guestOptions?.canModify ?? false,
+    guestsCanSeeOtherGuests: meeting.guestOptions?.canSeeGuests ?? true,
   };
 }
+
+/** Asks Google to make a Meet link for the event. */
+const meetRequest = () => ({
+  conferenceData: {
+    createRequest: { requestId: randomUUID(), conferenceSolutionKey: { type: 'hangoutsMeet' } },
+  },
+});
 
 /**
  * Put a meeting into the person's calendar.
@@ -90,28 +100,29 @@ export async function insertEvent(token, meeting, { withMeet = false, tellGuests
     query: { conferenceDataVersion: withMeet ? 1 : 0, sendUpdates: tellGuests ? 'all' : 'none' },
     body: {
       ...toBody(meeting),
-      ...(withMeet
-        ? {
-            conferenceData: {
-              createRequest: {
-                requestId: randomUUID(),
-                conferenceSolutionKey: { type: 'hangoutsMeet' },
-              },
-            },
-          }
-        : {}),
+      ...(withMeet ? meetRequest() : {}),
     },
   });
   return { id: created.id, meetLink: toEvent(created).meetLink };
 }
 
-/** Change an event that is in the calendar already. */
-export async function patchEvent(token, eventId, meeting, { tellGuests = true } = {}) {
-  await call(token, `/events/${eventId}`, {
+/**
+ * Change an event that is in the calendar already.
+ * withMeet: also make a Meet link (for a meeting that became an online one).
+ * @returns {Promise<{ meetLink: string | null }>}
+ */
+export async function patchEvent(
+  token,
+  eventId,
+  meeting,
+  { withMeet = false, tellGuests = true } = {},
+) {
+  const changed = await call(token, `/events/${eventId}`, {
     method: 'PATCH',
-    query: { sendUpdates: tellGuests ? 'all' : 'none' },
-    body: toBody(meeting),
+    query: { conferenceDataVersion: withMeet ? 1 : 0, sendUpdates: tellGuests ? 'all' : 'none' },
+    body: { ...toBody(meeting), ...(withMeet ? meetRequest() : {}) },
   });
+  return { meetLink: toEvent(changed).meetLink };
 }
 
 /** Take an event out of the calendar. One that is gone already is fine. */

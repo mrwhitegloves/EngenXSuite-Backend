@@ -54,7 +54,10 @@ vi.stubGlobal('fetch', async (input, options = {}) => {
   }
   const id = path.replace('/events/', '');
   if (!calendar.events.has(id)) return json({ error: { message: 'Not Found' } }, 404);
-  if (method === 'PATCH') return json(inGoogle(id, body));
+  if (method === 'PATCH') {
+    const meet = body.conferenceData ? { hangoutLink: `https://meet.google.com/${id}-later` } : {};
+    return json(inGoogle(id, { ...body, ...meet }));
+  }
   if (method === 'DELETE') {
     inGoogle(id, { status: 'cancelled' });
     return new Response(null, { status: 204 });
@@ -244,6 +247,66 @@ describe('planning a meeting', () => {
     expect(kept.status).toBe(201);
     expect(kept.body.data.isInGoogleCalendar).toBe(false);
     expect(kept.body.data.googleSyncError).toContain('Backend Error');
+  });
+});
+
+describe('guests, as in Google Calendar itself', () => {
+  it('anyone can be a guest by email; what guests may do is set; a later online meeting gets a link', async () => {
+    const created = await asAsha.post('/api/meetings').send(
+      plan({
+        mode: 'physical',
+        location: 'Pune office',
+        extraGuests: [
+          { email: 'Consultant@Advisor.example', name: 'Ravi Consultant' },
+          { email: CUSTOMER }, // a person of the company is not a guest twice
+          { email: 'consultant@advisor.example' }, // the same address is one guest
+        ],
+        guestOptions: { canInviteOthers: false, canModify: true },
+      }),
+    );
+    expect(created.status).toBe(201);
+    expect(created.body.data.attendees.map((person) => [person.email, person.name])).toEqual([
+      [CUSTOMER, 'Asha Verma'],
+      ['consultant@advisor.example', 'Ravi Consultant'],
+    ]);
+    expect(created.body.data.guestOptions).toEqual({
+      canInviteOthers: false,
+      canModify: true,
+      canSeeGuests: true,
+    });
+    expect(created.body.data.meetLink).toBeNull();
+    const [insert] = googleCalls('POST');
+    expect(insert.body).toMatchObject({
+      guestsCanInviteOthers: false,
+      guestsCanModify: true,
+      guestsCanSeeOtherGuests: true,
+    });
+    expect(insert.body.attendees.map((guest) => guest.email)).toEqual([
+      CUSTOMER,
+      'consultant@advisor.example',
+    ]);
+    expect(
+      (
+        await asAsha
+          .post('/api/meetings')
+          .send(plan({ extraGuests: [{ email: 'not-an-address' }] }))
+      ).status,
+    ).toBe(400);
+
+    // The guests answered; then the meeting becomes an online one with one guest less.
+    await Meeting.updateOne(
+      { _id: created.body.data.id },
+      { $set: { 'attendees.0.response': 'accepted' } },
+    );
+    const online = await asAsha
+      .patch(`/api/meetings/${created.body.data.id}`)
+      .send({ mode: 'online', extraGuests: [] });
+    expect(online.body.data.meetLink).toBe('https://meet.google.com/g1-later');
+    expect(online.body.data.attendees).toMatchObject([{ email: CUSTOMER, response: 'accepted' }]);
+    expect(googleCalls('PATCH')[0].body.conferenceData.createRequest).toBeDefined();
+    // Once it has its link, a later change does not ask for another one.
+    await asAsha.patch(`/api/meetings/${created.body.data.id}`).send({ title: 'Renamed' });
+    expect(googleCalls('PATCH')[1].body.conferenceData).toBeUndefined();
   });
 });
 

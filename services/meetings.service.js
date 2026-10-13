@@ -132,6 +132,11 @@ function toView(meeting, lookups, actor) {
     })),
     account: named(lookups.accounts, meeting.accountId),
     lead: named(lookups.leads, meeting.opportunityId),
+    guestOptions: {
+      canInviteOthers: meeting.guestOptions?.canInviteOthers ?? true,
+      canModify: meeting.guestOptions?.canModify ?? false,
+      canSeeGuests: meeting.guestOptions?.canSeeGuests ?? true,
+    },
     bookedVia: meeting.bookedVia,
     isInGoogleCalendar: Boolean(meeting.googleEventId),
     googleSyncError: meeting.googleSyncError ?? null,
@@ -219,22 +224,40 @@ async function resolveLinks(actor, data) {
   return { ...links, ...(await resolvePeople(actor, links.accountId, data)) };
 }
 
-/** The customer's people (of the meeting's company) and the colleagues who join. */
-async function resolvePeople(actor, accountId, data) {
+/**
+ * The guests from outside (people of the meeting's company, and anyone else by email) and the
+ * colleagues who join. `before`: the meeting as it is, when it is being changed: a kind of
+ * guest that the change does not name stays as it was, and an answer already given is kept.
+ */
+async function resolvePeople(actor, accountId, data, before) {
   const links = {};
-  if (data.contactIds) {
-    const contacts = await Contact.find({ _id: { $in: data.contactIds }, deletedAt: null })
-      .select('name email accountId')
-      .lean();
-    const isOfCompany = (contact) => accountId && sameId(contact.accountId, accountId);
-    if (contacts.length !== new Set(data.contactIds).size || !contacts.every(isOfCompany)) {
-      throw fieldProblem('contactIds', 'Choose people of this company');
+  if (data.contactIds || data.extraGuests) {
+    const was = before?.attendees ?? [];
+    let people = was.filter((person) => person.contactId);
+    if (data.contactIds) {
+      const contacts = await Contact.find({ _id: { $in: data.contactIds }, deletedAt: null })
+        .select('name email accountId')
+        .lean();
+      const isOfCompany = (contact) => accountId && sameId(contact.accountId, accountId);
+      if (contacts.length !== new Set(data.contactIds).size || !contacts.every(isOfCompany)) {
+        throw fieldProblem('contactIds', 'Choose people of this company');
+      }
+      people = contacts.map((contact) => ({
+        contactId: contact._id,
+        name: contact.name,
+        email: contact.email || undefined,
+      }));
     }
-    links.attendees = contacts.map((contact) => ({
-      contactId: contact._id,
-      name: contact.name,
-      email: contact.email || undefined,
-    }));
+    const others = data.extraGuests ?? was.filter((person) => !person.contactId);
+    const taken = new Set(people.map((person) => person.email).filter(Boolean));
+    const answers = new Map(was.map((person) => [person.email, person.response]));
+    links.attendees = [
+      ...people,
+      // The same address is one guest, and a person of the company is not a guest twice.
+      ...others
+        .filter((guest) => !taken.has(guest.email) && taken.add(guest.email))
+        .map((guest) => ({ email: guest.email, name: guest.name || undefined })),
+    ].map((person) => ({ ...person, response: answers.get(person.email) ?? 'needsAction' }));
   }
   if (data.internalAttendeeIds) {
     const ids = [...new Set(data.internalAttendeeIds)].filter((id) => !sameId(id, actor._id));
@@ -269,6 +292,7 @@ async function pushToGoogle(meeting, change, tellGuests = true) {
       location: meeting.location,
       startAt: meeting.startAt,
       endAt: meeting.endAt,
+      guestOptions: meeting.guestOptions,
       guests: [...meeting.attendees, ...colleagues]
         .filter((person) => person.email)
         .map((person) => ({ email: person.email, name: person.name })),
@@ -276,7 +300,14 @@ async function pushToGoogle(meeting, change, tellGuests = true) {
     if (change === 'remove') {
       if (meeting.googleEventId) await removeEvent(token, meeting.googleEventId, { tellGuests });
     } else if (meeting.googleEventId) {
-      await patchEvent(token, meeting.googleEventId, event, { tellGuests });
+      // A meeting that became an online one gets its Meet link now.
+      const changed = await patchEvent(token, meeting.googleEventId, event, {
+        withMeet: meeting.mode === 'online' && !meeting.meetLink,
+        tellGuests,
+      });
+      if (changed.meetLink && changed.meetLink !== meeting.meetLink) {
+        update.$set = { meetLink: changed.meetLink };
+      }
     } else {
       const created = await insertEvent(token, event, {
         withMeet: meeting.mode === 'online',
@@ -326,6 +357,7 @@ export async function createMeeting(actor, data, context = {}) {
     endAt: data.endAt,
     location: data.location,
     agenda: data.agenda,
+    guestOptions: data.guestOptions,
     ...links,
     organizerId: actor._id,
     createdBy: actor._id,
@@ -379,7 +411,11 @@ export async function updateMeeting(actor, meetingId, changes, context = {}) {
   const startAt = set.startAt ?? before.startAt;
   const endAt = set.endAt ?? before.endAt;
   if (endAt <= startAt) throw fieldProblem('endAt', 'The end must be after the start');
-  Object.assign(set, await resolvePeople(actor, before.accountId, plan));
+  if (plan.guestOptions) {
+    for (const [key, value] of Object.entries(plan.guestOptions))
+      set[`guestOptions.${key}`] = value;
+  }
+  Object.assign(set, await resolvePeople(actor, before.accountId, plan, before));
   const isMoved = +startAt !== +before.startAt;
   const saved = await Meeting.findByIdAndUpdate(
     before._id,

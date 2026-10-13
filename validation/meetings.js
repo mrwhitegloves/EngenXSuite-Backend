@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { MEETING_MODES } from '../models/meeting.model.js';
-import { objectId } from './common.js';
+import { email, objectId } from './common.js';
 
 const moment = z.coerce.date();
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -34,6 +34,19 @@ const plan = {
   agenda: z.string().trim().max(4000).optional(),
   contactIds: z.array(objectId).max(20).optional(),
   internalAttendeeIds: z.array(objectId).max(20).optional(),
+  // Guests who are not people of the company in the CRM: anyone, by email.
+  extraGuests: z
+    .array(z.object({ email, name: z.string().trim().max(200).optional() }))
+    .max(30)
+    .optional(),
+  // What the guests may do with the event in Google Calendar.
+  guestOptions: z
+    .object({
+      canInviteOthers: z.boolean().optional(),
+      canModify: z.boolean().optional(),
+      canSeeGuests: z.boolean().optional(),
+    })
+    .optional(),
   // false: Google does not mail the invitation (or the change) to the guests.
   tellGuests: z.boolean().optional(),
 };
