@@ -169,3 +169,12 @@ const accountFilters = {
 
 export const listAccountsQuery = z.object({ ...pagination, ...accountFilters });
 export const exportAccountsQuery = z.object(accountFilters);
+
+// ── Many companies at once (chosen on the Accounts screen)
+const manyAccountIds = z.array(objectId).min(1, 'Choose at least one company').max(2000);
+export const bulkAssignBody = z.object({
+  accountIds: manyAccountIds,
+  // One user: all go to that person. Several: they take turns (round robin).
+  userIds: z.array(objectId).min(1, 'Choose at least one user').max(100),
+});
+export const exportSelectedBody = z.object({ accountIds: manyAccountIds });

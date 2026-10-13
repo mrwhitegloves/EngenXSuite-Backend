@@ -2,12 +2,15 @@ import { Router } from 'express';
 import {
   getAccountById,
   getAccountContacts,
+  getAccountIds,
   getAccounts,
   getAccountsExport,
   getFormOptions,
   patchAccount,
   postAccount,
   postAccountContact,
+  postBulkAssign,
+  postBulkExport,
   postQuickAdd,
   removeAccount,
 } from '../controllers/accounts.controller.js';
@@ -16,8 +19,10 @@ import { authorize } from '../middleware/authorize.js';
 import { createExportLimiter } from '../middleware/rateLimit.js';
 import { validate } from '../middleware/validate.js';
 import {
+  bulkAssignBody,
   createAccountBody,
   exportAccountsQuery,
+  exportSelectedBody,
   listAccountsQuery,
   updateAccountBody,
 } from '../validation/accounts.js';
@@ -48,6 +53,26 @@ router.post(
   authorize('accounts', 'create'),
   validate({ body: createAccountBody }),
   postAccount,
+);
+// Many companies at once, chosen on the Accounts screen (before the /:id routes).
+router.get(
+  '/ids',
+  authorize('accounts', 'view'),
+  validate({ query: exportAccountsQuery }),
+  getAccountIds,
+);
+router.post(
+  '/bulk/assign',
+  authorize('accounts', 'assign'),
+  validate({ body: bulkAssignBody }),
+  postBulkAssign,
+);
+router.post(
+  '/bulk/export',
+  authorize('accounts', 'export'),
+  createExportLimiter(),
+  validate({ body: exportSelectedBody }),
+  postBulkExport,
 );
 // Before the /:id routes, so "quick-add" is not read as an id.
 router.post(
