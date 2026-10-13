@@ -17,6 +17,8 @@ export const GUEST_RESPONSES = ['needsAction', 'accepted', 'declined', 'tentativ
 const meetingSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true, maxlength: 200 },
+    // The kind from Settings → Meeting types, when one was chosen. `mode` is copied from it.
+    typeId: { type: ObjectId, ref: 'MeetingType' },
     mode: { type: String, enum: MEETING_MODES, required: true },
     startAt: { type: Date, required: true },
     endAt: { type: Date, required: true },

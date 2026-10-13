@@ -163,3 +163,34 @@ export async function listChangedEvents(token, { syncToken, since }) {
   } while (pageToken);
   return { events, syncToken: next };
 }
+
+/**
+ * When the person is busy between two moments, by their main calendar. Only the times: what
+ * they are busy with is not asked for.
+ * @returns {Promise<{ from: Date, to: Date }[]>}
+ */
+export async function getBusyTimes(token, { from, to }) {
+  let response;
+  try {
+    response = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        timeMin: from.toISOString(),
+        timeMax: to.toISOString(),
+        items: [{ id: 'primary' }],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch {
+    throw createAppError('GOOGLE_UNREACHABLE', 502, 'Google Calendar could not be reached.');
+  }
+  const answer = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw createAppError('CALENDAR_ERROR', 502, 'Google Calendar refused the request.');
+  }
+  return (answer.calendars?.primary?.busy ?? []).map((item) => ({
+    from: new Date(item.start),
+    to: new Date(item.end),
+  }));
+}

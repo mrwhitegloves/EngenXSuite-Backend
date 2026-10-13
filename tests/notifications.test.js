@@ -125,6 +125,8 @@ describe('preferences', () => {
       // Added with meetings (phase 06): an invitation from a colleague, and "starts soon".
       ['meeting_invite', true],
       ['meeting_reminder', true],
+      // Added with the public booking page (phase 06).
+      ['meeting_booked', true],
       // Added with the 7-day backup rule (2026-10-12).
       ['backup_deleted', true],
       // Added with the AI layer (phase 05): the AI budget is nearly or fully used.

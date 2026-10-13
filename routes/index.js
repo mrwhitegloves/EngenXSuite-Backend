@@ -23,6 +23,7 @@ import { callSettingsRouter, callsRouter, plivoWebhooksRouter } from './calls.ro
 import { aiChatRouter } from './aiChat.routes.js';
 import emailsRoutes from './emails.routes.js';
 import meetingsRoutes from './meetings.routes.js';
+import { bookingPageRouter, meetingTypesRouter } from './meetingTypes.routes.js';
 import googleConnectionRoutes from './googleConnection.routes.js';
 import { aiSettingsRouter, insightsRouter } from './insights.routes.js';
 import {
@@ -72,6 +73,8 @@ router.use('/insights', insightsRouter);
 router.use('/integrations/google', googleConnectionRoutes);
 router.use('/emails', emailsRoutes);
 router.use('/meetings', meetingsRoutes);
+router.use('/meeting-types', meetingTypesRouter);
+router.use('/booking-page', bookingPageRouter);
 router.use('/ai', aiChatRouter);
 router.use('/lead-forms', leadFormsRouter);
 router.use('/inbound-leads', inboundLeadsRouter);

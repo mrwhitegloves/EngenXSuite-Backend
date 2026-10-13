@@ -103,6 +103,18 @@ export function createPasswordResetLimiter({ limit = 5, windowMs = 15 * MINUTE_M
   });
 }
 
+/** Booking a meeting on a public booking page: 5 per hour per address. */
+export function createBookingLimiter({ limit = 5, windowMs = 60 * MINUTE_MS, skip } = {}) {
+  return createLimiter({
+    limit,
+    windowMs,
+    skip,
+    name: 'booking',
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    message: 'Too many bookings from this address. Please try again in an hour.',
+  });
+}
+
 /** Exports (data leaving the system): 10 per hour per signed-in user (Section 75). */
 export function createExportLimiter({ limit = 10, windowMs = 60 * MINUTE_MS, skip } = {}) {
   return createLimiter({

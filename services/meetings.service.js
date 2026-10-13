@@ -114,6 +114,7 @@ function toView(meeting, lookups, actor) {
   return {
     id: String(meeting._id),
     title: meeting.title,
+    typeId: meeting.typeId ? String(meeting.typeId) : null,
     mode: meeting.mode,
     status: meeting.status,
     startAt: meeting.startAt,
@@ -352,7 +353,10 @@ export async function createMeeting(actor, data, context = {}) {
   const links = await resolveLinks(actor, data);
   const saved = await Meeting.create({
     title: data.title,
+    typeId: data.typeId,
     mode: data.mode,
+    // Planned here, or booked by a customer on a booking page.
+    bookedVia: context.bookedVia ?? 'crm',
     startAt: data.startAt,
     endAt: data.endAt,
     location: data.location,
@@ -404,7 +408,7 @@ export async function updateMeeting(actor, meetingId, changes, context = {}) {
     throw conflict('This meeting is over or cancelled: only its notes can be changed.');
   }
   const set = {};
-  for (const field of ['title', 'mode', 'startAt', 'endAt', 'location', 'agenda']) {
+  for (const field of ['title', 'typeId', 'mode', 'startAt', 'endAt', 'location', 'agenda']) {
     if (plan[field] !== undefined) set[field] = plan[field];
   }
   if (notes !== undefined) set.notes = notes;

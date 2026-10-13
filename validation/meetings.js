@@ -27,6 +27,8 @@ export const listMeetingsQuery = z
 
 const plan = {
   title: z.string().trim().min(1, 'Give the meeting a title').max(200),
+  // The kind from Settings → Meeting types (the screen copies its mode and length).
+  typeId: objectId.optional(),
   mode: z.enum(MEETING_MODES),
   startAt: moment,
   endAt: moment,
@@ -88,3 +90,64 @@ export const decideTaskBody = z.object({
 
 // A voice note of the meeting, by its own address.
 export const transcribeBody = z.object({ url: z.string().url().max(1000) });
+
+// ── Meeting types (Settings)
+const typeFields = {
+  name: z.string().trim().min(1, 'Give it a name').max(80),
+  mode: z.enum(MEETING_MODES),
+  durationMinutes: z.number().int().min(15).max(480),
+  isBookable: z.boolean().optional(),
+  isActive: z.boolean().optional(),
+};
+export const createMeetingTypeBody = z.object(typeFields);
+export const updateMeetingTypeBody = z
+  .object({
+    name: typeFields.name.optional(),
+    mode: typeFields.mode.optional(),
+    durationMinutes: typeFields.durationMinutes.optional(),
+    isBookable: z.boolean().optional(),
+    isActive: z.boolean().optional(),
+    order: z.number().int().min(0).max(1000).optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to change' });
+
+// ── My booking page
+export const updateBookingPageBody = z
+  .object({
+    isActive: z.boolean().optional(),
+    intro: z.string().trim().max(500).optional(),
+    meetingTypeIds: z.array(objectId).max(20).optional(),
+    availability: z
+      .array(
+        z
+          .object({
+            weekday: z.number().int().min(0).max(6),
+            startMinute: z.number().int().min(0).max(1439),
+            endMinute: z.number().int().min(1).max(1440),
+          })
+          .refine((hours) => hours.endMinute > hours.startMinute, {
+            message: 'The end must be after the start',
+          }),
+      )
+      .max(21)
+      .optional(),
+    bufferMinutes: z.number().int().min(0).max(120).optional(),
+    maxDaysAhead: z.number().int().min(1).max(90).optional(),
+  })
+  .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to change' });
+
+// ── The public booking page
+export const bookingSlugParams = z.object({ slug: z.string().trim().min(3).max(60) });
+export const slotsQuery = z.object({
+  typeId: objectId,
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Give the day as YYYY-MM-DD'),
+});
+export const bookSlotBody = z.object({
+  typeId: objectId,
+  startAt: moment,
+  name: z.string().trim().min(2, 'Give your name').max(120),
+  email,
+  company: z.string().trim().max(200).optional(),
+  phone: z.string().trim().max(30).optional(),
+  note: z.string().trim().max(1000).optional(),
+});

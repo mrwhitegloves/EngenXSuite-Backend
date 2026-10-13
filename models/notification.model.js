@@ -19,6 +19,7 @@ export const NOTIFICATION_TYPES = {
   email_follow_up: 'A mail of mine got no answer for 3 or 7 days',
   meeting_invite: 'A colleague invites me to a meeting',
   meeting_reminder: 'A meeting of mine starts soon',
+  meeting_booked: 'A customer books a meeting on my booking page',
   backup_deleted: 'Old database backups are deleted (for people who manage the settings)',
   ai_budget: 'The AI budget is nearly or fully used (for people who manage the settings)',
 };
