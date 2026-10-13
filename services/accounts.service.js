@@ -285,6 +285,34 @@ function accountsFilter(actor, query, action) {
   });
 }
 
+/**
+ * The ids of every company the current filters match (all pages), so that "select all" on the
+ * Accounts screen can work on more than the page that is shown. Inside the actor's scope.
+ * @param {object} query  Already validated (the filters of the list)
+ * @returns {Promise<{ ids: string[], total: number, isCut: boolean }>}
+ */
+export async function listAccountIds(actor, query, limit = 2000) {
+  const filter = accountsFilter(actor, query, 'view');
+  const [rows, total] = await Promise.all([
+    Account.find(filter).select('_id').sort({ createdAt: -1 }).limit(limit).lean(),
+    Account.countDocuments(filter),
+  ]);
+  return { ids: rows.map((row) => String(row._id)), total, isCut: total > rows.length };
+}
+
+/** Names of the status, the owner and the tags of some companies, for a file of them. */
+export async function loadAccountListLookups(accounts) {
+  const lookups = await loadLookups(accounts);
+  return {
+    status: (id) => statusOf(id, lookups)?.name ?? '',
+    owner: (id) => person(id, lookups)?.name ?? '',
+    tags: (tagIds) =>
+      tagsOf(tagIds, lookups)
+        .map((tag) => tag.name)
+        .join('; '),
+  };
+}
+
 // The most rows one export file holds. A larger result must be narrowed with filters.
 export const EXPORT_ROW_LIMIT = 10000;
 

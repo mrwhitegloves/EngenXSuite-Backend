@@ -63,6 +63,15 @@ const SCHEDULES = [
     isEnabled: () => true,
   },
   {
+    // Every minute: wake bulk sendings whose next step is overdue.
+    id: 'campaign-sweep',
+    queue: 'messaging',
+    cron: '* * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.campaignSweep,
+    isEnabled: () => true,
+  },
+  {
     // Every 5 minutes: take over what changed in every connected Google Calendar.
     id: 'calendar-sync-all',
     queue: 'integrations',

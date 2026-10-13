@@ -115,6 +115,18 @@ export function createBookingLimiter({ limit = 5, windowMs = 60 * MINUTE_MS, ski
   });
 }
 
+/** The "stop these mails" link of a bulk mail: 20 per hour per address of the caller. */
+export function createStopMailLimiter({ limit = 20, windowMs = 60 * MINUTE_MS, skip } = {}) {
+  return createLimiter({
+    limit,
+    windowMs,
+    skip,
+    name: 'stop-mail',
+    keyGenerator: (req) => ipKeyGenerator(req.ip),
+    message: 'Too many tries from this address. Please try again in an hour.',
+  });
+}
+
 /** Exports (data leaving the system): 10 per hour per signed-in user (Section 75). */
 export function createExportLimiter({ limit = 10, windowMs = 60 * MINUTE_MS, skip } = {}) {
   return createLimiter({

@@ -4,9 +4,11 @@ import {
   exportAccounts,
   getAccount,
   getAccountFormOptions,
+  listAccountIds,
   listAccounts,
   updateAccount,
 } from '../services/accounts.service.js';
+import { bulkAssignAccounts, exportSelectedAccounts } from '../services/accountsBulk.service.js';
 import { createContacts, listAccountContacts } from '../services/contacts.service.js';
 import { quickAdd } from '../services/quickAdd.service.js';
 import { sendCreated, sendList, sendOk } from '../lib/respond.js';
@@ -73,4 +75,27 @@ export async function patchAccount(req, res) {
 export async function removeAccount(req, res) {
   await deleteAccount(req.user, req.validated.params.id, { requestId: req.id });
   sendOk(res, { deleted: true });
+}
+
+// GET /api/accounts/ids: the ids of every company the filters match (for "select all").
+export async function getAccountIds(req, res) {
+  sendOk(res, await listAccountIds(req.user, req.validated.query));
+}
+
+// POST /api/accounts/bulk/assign: give chosen companies without an owner to people.
+export async function postBulkAssign(req, res) {
+  sendOk(res, await bulkAssignAccounts(req.user, req.validated.body, { requestId: req.id }));
+}
+
+// POST /api/accounts/bulk/export: the chosen companies as a CSV file.
+export async function postBulkExport(req, res) {
+  const { csv } = await exportSelectedAccounts(req.user, req.validated.body, {
+    requestId: req.id,
+  });
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
+  res
+    .status(200)
+    .set('Content-Type', 'text/csv; charset=utf-8')
+    .set('Content-Disposition', `attachment; filename="selected-accounts-${day}.csv"`)
+    .send(csv);
 }
