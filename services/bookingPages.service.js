@@ -62,14 +62,16 @@ export async function getMyBookingPage(actor) {
   let page = await BookingPage.findOne({ userId: actor._id }).lean();
   if (!page) {
     const bookable = types.filter((type) => type.isActive && type.isBookable);
-    page = (
-      await BookingPage.create({
-        userId: actor._id,
-        slug: slugOf(actor.name),
-        availability: STARTING_HOURS,
-        meetingTypeIds: bookable.map((type) => type.id),
-      })
-    ).toObject();
+    // Two requests at the same moment: the second one finds the page the first one made.
+    await BookingPage.create({
+      userId: actor._id,
+      slug: slugOf(actor.name),
+      availability: STARTING_HOURS,
+      meetingTypeIds: bookable.map((type) => type.id),
+    }).catch((error) => {
+      if (error?.code !== 11000) throw error;
+    });
+    page = await BookingPage.findOne({ userId: actor._id }).lean();
   }
   return toView(page, types);
 }
