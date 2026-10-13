@@ -666,3 +666,118 @@ describe('a mail of ours without an answer', () => {
     expect(await threadsOf(asAsha, '?view=follow_up')).toHaveLength(0);
   });
 });
+
+describe('what a person decides about a conversation', () => {
+  it('a conversation is put on another company, or on nothing; its mails move on the timeline', async () => {
+    deliver({ from: CUSTOMER, subject: 'Pilot', text: 'Hello', thread: 't1' });
+    await syncMailbox(asha._id);
+    const [thread] = await threadsOf(asAsha);
+    const other = await asAsha.post('/api/accounts/quick-add').send({
+      account: { name: 'Other Works' },
+      contacts: [{ name: 'Someone Else', email: 'someone@other.example' }],
+    });
+    const otherId = other.body.data.account.id;
+    const { Activity } = await import('../models/activity.model.js');
+    const entries = () => Activity.find({ type: 'EMAIL' }).lean();
+    expect(String((await entries())[0].accountId)).toBe(accountId);
+
+    const link = (client, body) => client.patch(`/api/emails/threads/${thread.id}/link`).send(body);
+    const moved = await link(asAsha, { accountId: otherId });
+    expect(moved.status).toBe(200);
+    expect(moved.body.data).toMatchObject({
+      account: { name: 'Other Works' },
+      contact: null,
+      lead: null,
+    });
+    expect((await entries()).map((entry) => String(entry.accountId))).toEqual([otherId]);
+
+    // On nothing: only its owner sees it, and it leaves the timelines.
+    expect((await link(asAsha, {})).body.data.account).toBeNull();
+    expect(await entries()).toHaveLength(0);
+    expect((await asCeo.get(`/api/emails/threads/${thread.id}`)).status).toBe(404);
+
+    // Back on the first company and its person: the entry is there again.
+    const back = await link(asAsha, { accountId, contactId });
+    expect(back.body.data).toMatchObject({
+      account: { name: 'Bharat Forge' },
+      contact: { name: 'Asha Verma' },
+    });
+    expect((await entries()).map((entry) => entry.title)).toEqual(['Email from Asha Verma: Pilot']);
+
+    // A person of another company is refused; somebody who cannot see it gets "not found".
+    const stranger = String((await Contact.findOne({ email: 'someone@other.example' }).lean())._id);
+    expect((await link(asAsha, { accountId, contactId: stranger })).status).toBe(400);
+    expect((await link(asOther, { accountId })).status).toBe(404);
+  });
+
+  it('a sender who is not in the CRM is added, and only then is their mail brought in', async () => {
+    deliver({
+      from: 'Vikram Rao <vikram@newfoundry.example>',
+      subject: 'Enquiry',
+      text: 'We need OEE.',
+    });
+    await syncMailbox(asha._id);
+    expect(await Email.countDocuments()).toBe(0); // the rule of the sync
+
+    const brought = await asAsha.post('/api/emails/bring-in').send({
+      email: 'Vikram@NewFoundry.example',
+      contactName: 'Vikram Rao',
+      accountName: 'New Foundry',
+      leadName: 'OEE enquiry',
+    });
+    expect(brought.status).toBe(200);
+    expect(brought.body.data).toMatchObject({ kept: 1 });
+    expect(brought.body.data.leadId).toBeTruthy();
+    const [thread] = await threadsOf(asAsha);
+    expect(thread).toMatchObject({
+      subject: 'Enquiry',
+      account: { name: 'New Foundry' },
+      contact: { name: 'Vikram Rao' },
+      lead: { name: 'OEE enquiry' },
+    });
+
+    const again = { email: 'vikram@newfoundry.example', contactName: 'V', accountName: 'X' };
+    expect((await asAsha.post('/api/emails/bring-in').send(again)).status).toBe(409);
+    // Neither a company nor a new name; and a person without a mailbox.
+    expect(
+      (await asAsha.post('/api/emails/bring-in').send({ email: 'a@b.example', contactName: 'A' }))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await asCeo
+          .post('/api/emails/bring-in')
+          .send({ email: 'a@b.example', contactName: 'A', accountName: 'B' })
+      ).status,
+    ).toBe(409);
+  });
+
+  it('mail that was kept with file names only gets its files with a later reading', async () => {
+    deliver({
+      from: CUSTOMER,
+      subject: 'Drawing',
+      thread: 't1',
+      files: [{ filename: 'press line.pdf', mimeType: 'application/pdf', content: DRAWING }],
+    });
+    await syncMailbox(asha._id);
+    // As it was before files were copied: the name, no address.
+    await Email.updateOne({}, { $unset: { 'attachments.0.url': '' } });
+    stored.clear();
+
+    await syncMailbox(asha._id);
+    const email = await Email.findOne().lean();
+    expect(email.attachments[0].url).toContain(`emails/${email._id}/1-press line.pdf`);
+    expect(email.filesCheckedAt).toBeInstanceOf(Date);
+    expect(stored.size).toBe(1);
+  });
+
+  it('my signature is kept with my connection', async () => {
+    const saved = await asAsha
+      .patch('/api/integrations/google/signature')
+      .send({ signature: 'Asha Agent\nSales, +91 90000 00000' });
+    expect(saved.body.data.connection.signature).toBe('Asha Agent\nSales, +91 90000 00000');
+    expect(
+      (await asCeo.patch('/api/integrations/google/signature').send({ signature: 'x' })).status,
+    ).toBe(409); // no connection
+  });
+});

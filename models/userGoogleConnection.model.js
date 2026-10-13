@@ -28,6 +28,8 @@ const userGoogleConnectionSchema = new mongoose.Schema(
       default: 'connected',
     },
     lastError: { type: String, maxlength: 300 },
+    // The lines the person puts under their mails (plain text).
+    signature: { type: String, maxlength: 1000 },
     connectedAt: { type: Date, required: true },
     // Where the mailbox and calendar sync stand (filled by the sync jobs).
     gmail: {

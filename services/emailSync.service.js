@@ -15,7 +15,7 @@ import { Email, EmailThread } from '../models/email.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { recordActivity } from './activities.service.js';
-import { storeMessageAttachments } from './emailFiles.service.js';
+import { backfillAttachments, storeMessageAttachments } from './emailFiles.service.js';
 import { getGoogleAccessToken } from './googleConnection.service.js';
 import { notify } from './notifications.service.js';
 
@@ -287,6 +287,7 @@ export async function syncMailbox(userId) {
   const mailbox = { userId: connection.userId, googleEmail: connection.googleEmail };
   let looked = 0;
   let kept = 0;
+  let filled = 0;
   try {
     const token = await getGoogleAccessToken(userId);
     const isFirst = !connection.gmail?.historyId;
@@ -318,6 +319,8 @@ export async function syncMailbox(userId) {
         }
       }
     }
+    // A few mails that were kept before files were copied get their files now.
+    filled = await backfillAttachments(token, userId);
     await UserGoogleConnection.updateOne(
       { _id: connection._id },
       {
@@ -338,7 +341,7 @@ export async function syncMailbox(userId) {
     if (!error?.isAppError) throw error;
     return { skipped: error.message };
   }
-  if (kept > 0) {
+  if (kept > 0 || filled > 0) {
     emitToAll(SOCKET_EVENTS.emailsChanged);
   }
   return { looked, kept };

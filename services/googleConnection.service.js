@@ -69,6 +69,7 @@ export async function getGoogleConnection(actor) {
           hasMail: connection.scopes.some((scope) => scope.includes('gmail')),
           hasCalendar: connection.scopes.some((scope) => scope.includes('calendar')),
           mailLastSyncAt: connection.gmail?.lastSyncAt ?? null,
+          signature: connection.signature ?? '',
         }
       : null,
   };
@@ -197,4 +198,16 @@ export async function getGoogleAccessToken(userId) {
     }
     throw error;
   }
+}
+
+/** The lines a person puts under their mails. Kept with their connection. */
+export async function updateSignature(actor, { signature }) {
+  const result = await UserGoogleConnection.updateOne(
+    { userId: actor._id },
+    { $set: { signature } },
+  );
+  if (result.matchedCount === 0) {
+    throw createAppError('GOOGLE_NOT_CONNECTED', 409, 'Gmail and Calendar are not connected.');
+  }
+  return getGoogleConnection(actor);
 }

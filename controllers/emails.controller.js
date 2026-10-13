@@ -1,5 +1,6 @@
 import { sendList, sendOk } from '../lib/respond.js';
 import { assistOnThread, summarizeMailFile } from '../services/emailAssist.service.js';
+import { bringInSender, relinkThread } from '../services/emailLinks.service.js';
 import {
   classifyNow,
   draftAnswer,
@@ -76,4 +77,15 @@ export async function postAssist(req, res) {
 // POST /api/emails/files/summary: what a file of a mail says.
 export async function postFileSummary(req, res) {
   sendOk(res, await summarizeMailFile(req.user, req.validated.body));
+}
+
+// PATCH /api/emails/threads/:id/link: put a conversation on another lead, company or person.
+export async function patchLink(req, res) {
+  const { params, body } = req.validated;
+  sendOk(res, await relinkThread(req.user, params.id, body, { requestId: req.id }));
+}
+
+// POST /api/emails/bring-in: add a sender to the CRM and bring in my mail with them.
+export async function postBringIn(req, res) {
+  sendOk(res, await bringInSender(req.user, req.validated.body, { requestId: req.id }));
 }

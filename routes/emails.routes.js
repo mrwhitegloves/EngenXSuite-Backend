@@ -4,8 +4,10 @@ import {
   getMailbox,
   getThreadById,
   getThreads,
+  patchLink,
   postAssist,
   postAttachment,
+  postBringIn,
   postClassify,
   postDraft,
   postFileSummary,
@@ -23,9 +25,11 @@ import { MAX_UPLOAD_BYTES } from '../services/emailFiles.service.js';
 import {
   accountFilesQuery,
   assistBody,
+  bringInBody,
   draftBody,
   fileSummaryBody,
   listThreadsQuery,
+  relinkBody,
   sendEmailBody,
   writeWithAiBody,
 } from '../validation/emails.js';
@@ -48,6 +52,18 @@ router.get(
   getThreads,
 );
 router.get('/threads/:id', authorize(FEATURE, 'view'), byId, getThreadById);
+router.patch(
+  '/threads/:id/link',
+  authorize(FEATURE, 'view'),
+  validate({ params: idParams, body: relinkBody }),
+  patchLink,
+);
+router.post(
+  '/bring-in',
+  authorize(FEATURE, 'create'),
+  validate({ body: bringInBody }),
+  postBringIn,
+);
 router.post('/send', authorize(FEATURE, 'create'), validate({ body: sendEmailBody }), postSend);
 router.post(
   '/attachments',

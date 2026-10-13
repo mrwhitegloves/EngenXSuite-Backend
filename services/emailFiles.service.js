@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { getAttachment } from '../integrations/google/gmail.js';
+import { getAttachment, getMessage } from '../integrations/google/gmail.js';
 import { logger } from '../infra/logger.js';
 import { isStorageConfigured, toReadableUrl, uploadObject } from '../infra/storage.js';
 import { badRequest, createAppError } from '../lib/errors.js';
+import { Email } from '../models/email.model.js';
 
 // The files of customer mail. An attachment of a kept mail is copied from Gmail into our own
 // private storage; the mail keeps only the file's address there. The browser never gets that
@@ -92,3 +93,41 @@ export const attachmentViews = (attachments = []) =>
       link: file.url ? await toReadableUrl(file.url) : null,
     })),
   );
+
+/**
+ * Mail that was kept before files were copied has only the names of its files. A few of those
+ * mails are looked at again with every reading of the mailbox, and their files are copied.
+ * Each mail is tried once.
+ * @returns {Promise<number>} How many mails got their files
+ */
+export async function backfillAttachments(token, userId, limit = 5) {
+  if (!isStorageConfigured()) return 0;
+  const emails = await Email.find({
+    userId,
+    'attachments.0': { $exists: true },
+    'attachments.url': { $exists: false },
+    filesCheckedAt: null,
+  })
+    .sort({ sentAt: -1 })
+    .limit(limit)
+    .lean();
+  let filled = 0;
+  for (const email of emails) {
+    const set = { filesCheckedAt: new Date() };
+    try {
+      const message = await getMessage(token, email.gmailMessageId);
+      set.attachments = await storeMessageAttachments(
+        token,
+        email._id,
+        email.gmailMessageId,
+        message.attachments,
+      );
+      if (set.attachments.some((file) => file.url)) filled += 1;
+    } catch (error) {
+      // Deleted in Gmail meanwhile, or Gmail will not give it: the names stay as they are.
+      logger.info({ reason: error?.message, emailId: String(email._id) }, 'No files for a mail');
+    }
+    await Email.updateOne({ _id: email._id }, { $set: set });
+  }
+  return filled;
+}

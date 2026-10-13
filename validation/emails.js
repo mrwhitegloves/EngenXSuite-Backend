@@ -68,3 +68,28 @@ export const assistBody = z.object({
 
 // A file of a mail, by its own address.
 export const fileSummaryBody = z.object({ url: z.string().url().max(1000) });
+
+// Which lead, company and person a conversation belongs to; all empty: to nothing.
+export const relinkBody = z.object({
+  opportunityId: objectId.nullable().optional(),
+  accountId: objectId.nullable().optional(),
+  contactId: objectId.nullable().optional(),
+});
+
+// A sender who is not in the CRM yet: added to a new company or to one that is there.
+export const bringInBody = z
+  .object({
+    email,
+    contactName: z.string().trim().min(1, 'Give the person a name').max(200),
+    accountId: objectId.optional(),
+    accountName: z.string().trim().min(1).max(200).optional(),
+    // With a new company: also make a first lead of this name.
+    leadName: z.string().trim().min(1).max(200).optional(),
+  })
+  .refine((body) => Boolean(body.accountId) !== Boolean(body.accountName), {
+    message: 'Choose a company or give the name of a new one',
+    path: ['accountName'],
+  });
+
+// The lines a person puts under their mails.
+export const signatureBody = z.object({ signature: z.string().trim().max(1000) });

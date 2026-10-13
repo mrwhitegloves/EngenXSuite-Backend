@@ -80,6 +80,8 @@ const emailSchema = new mongoose.Schema(
       type: [{ _id: false, filename: String, mimeType: String, size: Number, url: String }],
       default: [],
     },
+    // Set once the files of a mail kept earlier (names only) were looked for in Gmail again.
+    filesCheckedAt: { type: Date },
     // The message's own id header, needed to answer inside the same conversation.
     messageIdHeader: { type: String },
     references: { type: String },

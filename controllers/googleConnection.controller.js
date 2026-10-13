@@ -11,6 +11,7 @@ import {
   disconnectGoogle,
   getGoogleConnection,
   prepareConnect,
+  updateSignature,
 } from '../services/googleConnection.service.js';
 
 // A person's own connection to Gmail and Calendar.
@@ -67,4 +68,9 @@ export function finishConnect(req, res, next) {
 // DELETE /api/integrations/google: take my connection away.
 export async function removeConnection(req, res) {
   sendOk(res, await disconnectGoogle(req.user, { requestId: req.id }));
+}
+
+// PATCH /api/integrations/google/signature: the lines under my mails.
+export async function patchSignature(req, res) {
+  sendOk(res, await updateSignature(req.user, req.validated.body));
 }
