@@ -6,13 +6,12 @@ import { can } from '../lib/can.js';
 import { badRequest, conflict, forbidden } from '../lib/errors.js';
 import { Contact } from '../models/contact.model.js';
 import { Email, EmailThread } from '../models/email.model.js';
-import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { loadAccountForAction } from './accounts.service.js';
 import { recordActivity, relinkActivity } from './activities.service.js';
 import { createContacts } from './contacts.service.js';
 import { getThread, loadThreadForViewer } from './emails.service.js';
 import { keepMessage } from './emailSync.service.js';
-import { getGoogleAccessToken } from './googleConnection.service.js';
+import { getCompanyMailbox, getGoogleAccessToken } from './googleConnection.service.js';
 import { loadLeadForAction } from './opportunities.service.js';
 import { quickAdd } from './quickAdd.service.js';
 
@@ -33,10 +32,9 @@ const sameId = (a, b) => a != null && b != null && String(a) === String(b);
  */
 export async function relinkThread(actor, threadId, links, context = {}) {
   const thread = await loadThreadForViewer(actor, threadId);
-  const mayChange =
-    sameId(thread.userId, actor._id) ||
-    can(actor, 'edit', { feature: 'email', record: thread, ownerField: 'userId' });
-  if (!mayChange) throw forbidden('Only the owner of this conversation can change its links.');
+  if (!can(actor, 'edit', { feature: 'email' })) {
+    throw forbidden('You may not change what a conversation is about.');
+  }
 
   const next = { accountId: null, contactId: null, opportunityId: null };
   if (links.opportunityId) {
@@ -110,28 +108,29 @@ export async function relinkThread(actor, threadId, links, context = {}) {
     requestId: context.requestId,
   });
   emitToAll(SOCKET_EVENTS.emailsChanged);
-  // Unlinked, somebody other than the owner no longer sees it.
-  return sameId(thread.userId, actor._id) || hasLinks ? getThread(actor, thread._id) : null;
+  // Put on a company the person may not see, or on nothing, it is no longer theirs to see.
+  return hasLinks ? getThread(actor, thread._id).catch(() => null) : null;
 }
 
 /**
  * A sender who is not in the CRM yet is a customer: add them (to a new company, with a first
  * lead when wanted, or to a company that is there), then bring in the mail of the last three
- * months with them from my own mailbox.
+ * months with them from the company mailbox.
  * @param {{ email: string, contactName: string, accountId?: string, accountName?: string,
  *           leadName?: string }} data  Validated
  * @returns {Promise<{ accountId: string, leadId: string | null, kept: number }>}
  */
 export async function bringInSender(actor, data, context = {}) {
-  const connection = await UserGoogleConnection.findOne({
-    userId: actor._id,
-    status: 'connected',
-  }).lean();
-  if (!connection) throw conflict('Connect your Gmail first (My profile → Mail and calendar).');
+  const connection = await getCompanyMailbox();
+  if (connection?.status !== 'connected') {
+    throw conflict(
+      'The company mailbox is not connected. Someone who manages the settings connects it under Mail and calendar.',
+    );
+  }
   if (await Contact.exists({ email: data.email, deletedAt: null })) {
     throw conflict('This address is in the CRM already. Its mail comes in with the next reading.');
   }
-  const token = await getGoogleAccessToken(actor._id);
+  const token = await getGoogleAccessToken();
 
   const person = { name: data.contactName, email: data.email };
   let accountId;
@@ -159,7 +158,7 @@ export async function bringInSender(actor, data, context = {}) {
     search: `{from:${data.email} to:${data.email} cc:${data.email}} newer_than:${BRING_IN_DAYS}d`,
     pageSize: BRING_IN_MAX,
   });
-  const mailbox = { userId: actor._id, googleEmail: connection.googleEmail };
+  const mailbox = { userId: connection.userId, googleEmail: connection.googleEmail };
   let kept = 0;
   for (const { id } of [...ids].reverse()) {
     const result = await keepMessage(token, mailbox, id).catch(() => ({ kept: false }));

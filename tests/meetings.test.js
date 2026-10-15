@@ -162,17 +162,21 @@ beforeEach(async () => {
   accountId = created.body.data.account.id;
   leadId = created.body.data.lead.id;
   contactId = String((await Contact.findOne({ email: CUSTOMER }).lean())._id);
-  await completeConnect(asha, {
-    accessToken: 'access',
-    refreshToken: 'refresh',
-    expiresInSec: 3600,
-    scopes: [
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/calendar.events',
-    ],
-    googleEmail: OWN,
-    hostedDomain: 'engenx.in',
-  });
+  // The company mailbox, connected once by the CEO for everyone (decision 0014).
+  await completeConnect(
+    await loadRequestUser((await User.findOne({ email: 'ceo@engenx.in' }))._id),
+    {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSec: 3600,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+      googleEmail: OWN,
+      hostedDomain: 'engenx.in',
+    },
+  );
 });
 
 describe('planning a meeting', () => {
@@ -233,14 +237,18 @@ describe('planning a meeting', () => {
     expect(googleCalls('POST')[0].sendUpdates).toBe('none');
   });
 
-  it('without a connected calendar, or with Google down, the meeting is still kept', async () => {
-    // Omar has no calendar connected: his meeting lives in the CRM only.
+  it('every meeting goes into the company calendar with its organizer as a guest; without it, or with Google down, it is still kept', async () => {
+    // Omar's meeting goes into the company calendar too (decision 0014); he is a guest, so it
+    // is in his own calendar as well.
     const mine = await asOmar
       .post('/api/meetings')
       .send({ title: 'Internal prep', mode: 'physical', startAt: at(0), endAt: at(1) });
     expect(mine.status).toBe(201);
-    expect(mine.body.data).toMatchObject({ isInGoogleCalendar: false, googleSyncError: null });
-    expect(calendar.calls).toHaveLength(0);
+    expect(mine.body.data).toMatchObject({ isInGoogleCalendar: true, googleSyncError: null });
+    expect(googleCalls('POST')[0].body.attendees.map((guest) => guest.email)).toEqual([
+      'omar@engenx.in',
+    ]);
+    calendar.calls.length = 0;
 
     calendar.isDown = true;
     const kept = await asAsha.post('/api/meetings').send(plan());
@@ -426,7 +434,7 @@ describe('deleting a meeting', () => {
 describe('changes made in Google Calendar', () => {
   it('a new time, an answer and a cancellation come back into the CRM', async () => {
     const meeting = (await asAsha.post('/api/meetings').send(plan())).body.data;
-    await syncCalendar(asha._id); // the first look: nothing differs
+    await syncCalendar(); // the first look: nothing differs
 
     inGoogle('g1', {
       start: { dateTime: at(5) },
@@ -436,22 +444,22 @@ describe('changes made in Google Calendar', () => {
         { email: OWN, self: true, responseStatus: 'accepted' },
       ],
     });
-    expect(await syncCalendar(asha._id)).toEqual({ events: 1, changed: 1 });
+    expect(await syncCalendar()).toEqual({ events: 1, changed: 1 });
     const moved = (await asAsha.get(`/api/meetings/${meeting.id}`)).body.data;
     expect(new Date(moved.startAt).toISOString()).toBe(at(5));
     expect(moved.attendees).toMatchObject([{ email: CUSTOMER, response: 'accepted' }]);
     // The change that just came from Google is not sent back to it.
     expect(googleCalls('PATCH')).toHaveLength(0);
-    expect(await syncCalendar(asha._id)).toEqual({ events: 0, changed: 0 });
+    expect(await syncCalendar()).toEqual({ events: 0, changed: 0 });
 
     inGoogle('g1', { status: 'cancelled' });
-    await syncCalendar(asha._id);
+    await syncCalendar();
     expect((await Meeting.findById(meeting.id).lean()).status).toBe('cancelled');
     expect((await titlesOnTimeline()).at(-1)).toBe('Meeting cancelled: Pilot scope');
   });
 
   it('an event made in Google becomes a meeting only when a person of the CRM is a guest', async () => {
-    await syncCalendar(asha._id);
+    await syncCalendar();
     inGoogle('own-1', {
       summary: 'Call with Bharat Forge',
       start: { dateTime: at(0) },
@@ -476,7 +484,7 @@ describe('changes made in Google Calendar', () => {
       end: { date: '2026-11-03' },
       attendees: [{ email: CUSTOMER }],
     });
-    expect(await syncCalendar(asha._id)).toEqual({ events: 4, changed: 1 });
+    expect(await syncCalendar()).toEqual({ events: 4, changed: 1 });
 
     const kept = await Meeting.find().lean();
     expect(kept).toHaveLength(1);
@@ -488,14 +496,18 @@ describe('changes made in Google Calendar', () => {
       meetLink: 'https://meet.google.com/own-1',
     });
     expect(String(kept[0].accountId)).toBe(accountId);
+    // It is put on the owner of that person's company.
+    expect(String(kept[0].organizerId)).toBe(String(asha._id));
     expect(String(kept[0].attendees[0].contactId)).toBe(contactId);
 
     // Google forgot where we stood: everything is looked at again, and nothing is doubled.
     calendar.tokenIsGone = true;
-    await syncCalendar(asha._id);
+    await syncCalendar();
     expect(await Meeting.countDocuments()).toBe(1);
-    // Someone without a connection is skipped.
-    expect(await syncCalendar(omarId)).toEqual({ skipped: 'not connected' });
+    // Without the company calendar there is nothing to read.
+    const { UserGoogleConnection } = await import('../models/userGoogleConnection.model.js');
+    await UserGoogleConnection.deleteMany({});
+    expect(await syncCalendar()).toEqual({ skipped: 'not connected' });
   });
 });
 

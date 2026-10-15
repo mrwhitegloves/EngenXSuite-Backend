@@ -15,12 +15,11 @@ export async function runEmailFollowUpsJob() {
 }
 
 /**
- * Bring one person's mailbox up to date. Safe to run twice: one run at a time per mailbox, and
- * a message is stored once.
- * @param {{ userId: string }} data
+ * Bring the company mailbox up to date. Safe to run twice: one run at a time, and a message is
+ * stored once. (The job data still carries the mailbox's user id; it is not needed.)
  */
-export async function runEmailSyncJob({ userId }) {
-  return syncMailbox(userId);
+export async function runEmailSyncJob() {
+  return syncMailbox();
 }
 
 /** Every few minutes: one sync job per connected mailbox. */

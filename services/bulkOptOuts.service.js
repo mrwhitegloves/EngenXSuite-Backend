@@ -48,13 +48,13 @@ export async function isOptedOut(channel, address) {
   return clean ? (await findOptedOut(channel, [clean])).has(clean) : false;
 }
 
-/** Put an address on the list. Doing it twice changes nothing. */
+/** Put an address on the list. Doing it twice changes nothing. @returns the stored row */
 async function saveOptOut({ channel, address, source, note, createdBy }) {
-  await BulkOptOut.updateOne(
+  return BulkOptOut.findOneAndUpdate(
     { channel, address },
     { $setOnInsert: { channel, address, source, note, createdBy } },
-    { upsert: true },
-  );
+    { upsert: true, returnDocument: 'after' },
+  ).lean();
 }
 
 /**
@@ -96,11 +96,18 @@ export async function addOptOut(actor, { channel, address, note }, context = {})
       channel === 'email' ? 'This is not an email address.' : 'This is not a phone number.',
     );
   }
-  await saveOptOut({ channel, address: clean, source: 'person', note, createdBy: actor._id });
+  const row = await saveOptOut({
+    channel,
+    address: clean,
+    source: 'person',
+    note,
+    createdBy: actor._id,
+  });
   await writeAudit({
     actor,
     action: 'bulk_opt_out.added',
     entityType: 'bulk_opt_outs',
+    entityId: row._id,
     newValue: { channel, address: clean },
     requestId: context.requestId,
   });

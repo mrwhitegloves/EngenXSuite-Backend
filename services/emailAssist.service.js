@@ -7,12 +7,13 @@ import {
   writeEmailVariants,
 } from '../ai/tasks/emailAssist.js';
 import { keyFromUrl, readObject } from '../infra/storage.js';
-import { badRequest, forbidden, notFound } from '../lib/errors.js';
+import { badRequest, notFound } from '../lib/errors.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Email, EmailThread } from '../models/email.model.js';
 import { readChatFile } from './aiChat.service.js';
 import { loadThreadForViewer, visibleThreads } from './emails.service.js';
+import { responsibleFor } from './emailSync.service.js';
 import { notify } from './notifications.service.js';
 
 // The AI's smaller helps on customer mail (ai/tasks/emailAssist.js), and the reminder that a
@@ -23,7 +24,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const MAX_READ_BYTES = 10 * 1024 * 1024;
 // A mail of ours without an answer is brought up after this many days, once each.
 export const FOLLOW_UP_DAYS = [3, 7];
-const sameId = (a, b) => a != null && b != null && String(a) === String(b);
 
 /** Today in India, as the AI needs it to work out "Friday" or "next week". */
 function todayInIndia(now) {
@@ -94,9 +94,6 @@ export async function assistOnThread(actor, threadId, request, now = new Date())
     };
   }
 
-  if (!sameId(thread.userId, actor._id)) {
-    throw forbidden('You can write only in conversations of your own mailbox.');
-  }
   if (request.kind === 'review') {
     if (!request.draft) throw badRequest('Write the mail first.');
     return (await reviewEmail({ ...base, draft: request.draft, sender: actor.name })).output;
@@ -129,7 +126,8 @@ export async function summarizeMailFile(actor, { url }) {
   const key = keyFromUrl(url);
   const email = key ? await Email.findOne({ 'attachments.url': url }).lean() : null;
   const isVisible =
-    email && (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleThreads(actor)] }));
+    email &&
+    (await EmailThread.exists({ $and: [{ _id: email.threadId }, await visibleThreads(actor)] }));
   if (!isVisible) throw notFound('File not found');
   const file = email.attachments.find((item) => item.url === url);
   if ((file.size ?? 0) > MAX_READ_BYTES) {
@@ -176,7 +174,8 @@ export async function runFollowUpReminders(now = new Date()) {
     for (const thread of threads) {
       const who = names.get(String(thread.contactId)) ?? thread.participants[0] ?? 'the customer';
       const sent = await notify({
-        userId: thread.userId,
+        // Who looks after the company or the lead (every mail is in the company mailbox).
+        userId: await responsibleFor(thread, thread.userId),
         type: 'email_follow_up',
         title: `No answer from ${who} for ${days} days`,
         body: thread.subject || '(no subject)',

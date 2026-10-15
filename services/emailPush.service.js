@@ -69,7 +69,7 @@ export async function renewGmailWatches(now = new Date()) {
   let watched = 0;
   for (const connection of due) {
     try {
-      const token = await getGoogleAccessToken(connection.userId);
+      const token = await getGoogleAccessToken();
       const { expiresAt } = await watchMailbox(token, env.GMAIL_PUSH_TOPIC);
       await UserGoogleConnection.updateOne(
         { _id: connection._id },
@@ -103,7 +103,7 @@ async function processGmailPush(event) {
       { jobId: `email-sync-${userId}-${Math.floor(Date.now() / 10_000)}` },
     );
   } catch {
-    await syncMailbox(userId);
+    await syncMailbox();
   }
 }
 registerWebhookProcessor('gmail_push', processGmailPush);

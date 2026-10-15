@@ -141,9 +141,11 @@ async function busyTimes(ownerId, from, to) {
     .select('startAt endAt')
     .lean();
   const busy = meetings.map((meeting) => ({ from: meeting.startAt, to: meeting.endAt }));
+  // The company calendar holds everyone's meetings (decision 0014), so its busy times are
+  // only the owner's own when the mailbox is stored under them.
   if (await UserGoogleConnection.exists({ userId: ownerId, status: 'connected' })) {
     try {
-      const token = await getGoogleAccessToken(ownerId);
+      const token = await getGoogleAccessToken();
       busy.push(...(await getBusyTimes(token, { from, to })));
     } catch (error) {
       // Google is away: the CRM's own meetings still count.

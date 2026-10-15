@@ -51,9 +51,9 @@ export async function postClose(req, res) {
   sendOk(res, await closeMeeting(req.user, params.id, body, { requestId: req.id }));
 }
 
-// POST /api/meetings/sync: read my Google Calendar now.
+// POST /api/meetings/sync: read the company calendar now.
 export async function postSync(req, res) {
-  sendOk(res, await requestCalendarSync(req.user));
+  sendOk(res, await requestCalendarSync());
 }
 
 // GET /api/meetings/:id/record: the AI's summary of the meeting (when made) and its files.

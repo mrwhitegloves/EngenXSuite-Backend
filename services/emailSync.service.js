@@ -10,6 +10,7 @@ import {
 } from '../integrations/google/gmail.js';
 import { logger } from '../infra/logger.js';
 import { emitToAll } from '../infra/realtime.js';
+import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Email, EmailThread } from '../models/email.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
@@ -19,7 +20,7 @@ import { backfillAttachments, storeMessageAttachments } from './emailFiles.servi
 import { getGoogleAccessToken } from './googleConnection.service.js';
 import { notify } from './notifications.service.js';
 
-// Bringing customer mail from a connected Gmail mailbox into the CRM.
+// Bringing customer mail from the company mailbox (decision 0014) into the CRM.
 //
 // THE RULE: only mail with a person who is in the CRM is kept. For every message we first ask
 // Gmail only who it is from and to (no text). When none of those addresses belongs to a contact
@@ -76,6 +77,21 @@ async function linksFor(contacts, fromAddress) {
   };
 }
 
+/**
+ * Who looks after a conversation, to be told about it: the owner of its lead, else of its
+ * company, else of its person; else the fallback (the person the mailbox is stored under).
+ */
+export async function responsibleFor(thread, fallbackUserId) {
+  const [lead, account, contact] = await Promise.all([
+    thread.opportunityId
+      ? Opportunity.findById(thread.opportunityId).select('ownerId').lean()
+      : null,
+    thread.accountId ? Account.findById(thread.accountId).select('ownerId').lean() : null,
+    thread.contactId ? Contact.findById(thread.contactId).select('ownerId').lean() : null,
+  ]);
+  return lead?.ownerId ?? account?.ownerId ?? contact?.ownerId ?? fallbackUserId;
+}
+
 /** Bring a conversation's summary line in step with its stored messages. */
 async function refreshThread(threadId) {
   const [count, newest, oldest] = await Promise.all([
@@ -126,9 +142,10 @@ export async function classifyThread(threadId, userId) {
 /**
  * Look at one message of a mailbox and keep it when it is customer mail.
  * @param {{ userId: unknown, googleEmail: string }} mailbox
- * @param {{ announce?: boolean, force?: boolean }} [options]
- *        announce: tell the owner about a new customer mail (not during the first sync)
+ * @param {{ announce?: boolean, force?: boolean, sentBy?: unknown }} [options]
+ *        announce: tell who looks after it about a new customer mail (not during the first sync)
  *        force: keep it whoever it is with (a mail the person just sent from the CRM)
+ *        sentBy: the CRM user who just sent it from the CRM
  * @returns {Promise<{ kept: boolean, threadId?: unknown, emailId?: unknown }>}
  */
 export async function keepMessage(token, mailbox, messageId, options = {}) {
@@ -182,6 +199,7 @@ export async function keepMessage(token, mailbox, messageId, options = {}) {
       userId,
       gmailMessageId: message.id,
       direction,
+      ...(options.sentBy ? { sentByUserId: options.sentBy } : {}),
       from: message.from,
       fromName: message.fromName ?? undefined,
       to: message.to,
@@ -222,7 +240,7 @@ export async function keepMessage(token, mailbox, messageId, options = {}) {
       contactId: saved.contactId,
       accountId: saved.accountId,
       opportunityId: saved.opportunityId,
-      userId,
+      userId: options.sentBy ?? userId,
       occurredAt: message.sentAt,
       title:
         `Email ${direction === 'inbound' ? 'from' : 'to'} ${who}: ${message.subject || '(no subject)'}`.slice(
@@ -238,7 +256,7 @@ export async function keepMessage(token, mailbox, messageId, options = {}) {
 
   if (direction === 'inbound' && options.announce) {
     await notify({
-      userId,
+      userId: await responsibleFor(saved, userId),
       type: 'email_received',
       title: `New mail from ${who}`,
       body: message.subject || '(no subject)',
@@ -268,14 +286,13 @@ async function recentIds(token, days, max) {
 }
 
 /**
- * The background job: bring one person's mailbox up to date.
+ * The background job: bring the company mailbox up to date.
  * @returns {Promise<{ skipped?: string, looked?: number, kept?: number }>}
  */
-export async function syncMailbox(userId) {
-  // One run at a time per mailbox.
+export async function syncMailbox() {
+  // One run at a time.
   const connection = await UserGoogleConnection.findOneAndUpdate(
     {
-      userId,
       status: 'connected',
       $or: [
         { 'gmail.syncStartedAt': null },
@@ -291,7 +308,7 @@ export async function syncMailbox(userId) {
   let kept = 0;
   let filled = 0;
   try {
-    const token = await getGoogleAccessToken(userId);
+    const token = await getGoogleAccessToken();
     const isFirst = !connection.gmail?.historyId;
     let ids;
     let historyId;
@@ -317,12 +334,12 @@ export async function syncMailbox(userId) {
       } catch (error) {
         // A message that was deleted meanwhile, or one Gmail will not give: go on with the rest.
         if (error?.code !== 'GMAIL_NOT_FOUND') {
-          logger.warn({ err: error, userId: String(userId) }, 'A mail could not be synced');
+          logger.warn({ err: error }, 'A mail could not be synced');
         }
       }
     }
     // A few mails that were kept before files were copied get their files now.
-    filled = await backfillAttachments(token, userId);
+    filled = await backfillAttachments(token, connection.userId);
     await UserGoogleConnection.updateOne(
       { _id: connection._id },
       {
@@ -349,7 +366,7 @@ export async function syncMailbox(userId) {
   return { looked, kept };
 }
 
-/** The ids of every person with a working connection (for the job that syncs them all). */
+/** The id the company mailbox is stored under, when it works (for the job that syncs it). */
 export async function connectedUserIds() {
   const connections = await UserGoogleConnection.find({ status: 'connected' })
     .select('userId')

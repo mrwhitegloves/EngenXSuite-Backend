@@ -12,10 +12,13 @@ import { MEETING_MODES, Meeting } from '../models/meeting.model.js';
 import { MeetingSummary } from '../models/meetingSummary.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { User } from '../models/user.model.js';
-import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { loadAccountForAction } from './accounts.service.js';
 import { recordActivity } from './activities.service.js';
-import { getGoogleAccessToken } from './googleConnection.service.js';
+import {
+  getCompanyMailbox,
+  getGoogleAccessToken,
+  isCompanyMailboxConnected,
+} from './googleConnection.service.js';
 import { notify } from './notifications.service.js';
 import { loadLeadForAction } from './opportunities.service.js';
 
@@ -204,7 +207,7 @@ export async function getMeetingFormOptions(actor) {
       .select('name')
       .sort({ name: 1 })
       .lean(),
-    UserGoogleConnection.exists({ userId: actor._id, status: 'connected' }),
+    isCompanyMailboxConnected(),
   ]);
   return {
     modes: MEETING_MODES,
@@ -277,17 +280,18 @@ async function resolvePeople(actor, accountId, data, before) {
  * @param {'save' | 'remove'} change
  */
 async function pushToGoogle(meeting, change, tellGuests = true) {
-  const isConnected = await UserGoogleConnection.exists({
-    userId: meeting.organizerId,
-    status: 'connected',
-  });
-  if (!isConnected) return meeting;
+  // Every meeting is in the company calendar (decision 0014); the CRM user who organises it
+  // and the colleagues who join are guests, so it is in their own calendar too.
+  const mailbox = await getCompanyMailbox();
+  if (mailbox?.status !== 'connected') return meeting;
   const update = { $unset: { googleSyncError: 1 } };
   try {
-    const token = await getGoogleAccessToken(meeting.organizerId);
-    const colleagues = await User.find({ _id: { $in: meeting.internalAttendeeIds } })
-      .select('name email')
-      .lean();
+    const token = await getGoogleAccessToken();
+    const colleagues = (
+      await User.find({ _id: { $in: [meeting.organizerId, ...meeting.internalAttendeeIds] } })
+        .select('name email')
+        .lean()
+    ).filter((user) => user.email && user.email.toLowerCase() !== mailbox.googleEmail);
     const event = {
       title: meeting.title,
       agenda: meeting.agenda,

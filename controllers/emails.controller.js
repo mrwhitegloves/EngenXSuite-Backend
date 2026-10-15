@@ -27,14 +27,14 @@ export async function getThreadById(req, res) {
   sendOk(res, await getThread(req.user, req.validated.params.id));
 }
 
-// GET /api/emails/mailbox: is my mailbox connected, when was it last read.
+// GET /api/emails/mailbox: is the company mailbox connected, when was it last read.
 export async function getMailbox(req, res) {
-  sendOk(res, await getMailboxStatus(req.user));
+  sendOk(res, await getMailboxStatus());
 }
 
-// POST /api/emails/sync: read my mailbox now.
+// POST /api/emails/sync: read the company mailbox now.
 export async function postSync(req, res) {
-  sendOk(res, await requestSync(req.user));
+  sendOk(res, await requestSync());
 }
 
 // POST /api/emails/send: an answer in a conversation, or a new mail, from my own mailbox.
