@@ -10,9 +10,9 @@ import { requireAuth } from '../middleware/requireAuth.js';
 import { validate } from '../middleware/validate.js';
 import { signatureBody } from '../validation/emails.js';
 
-// A person's own Gmail and Calendar connection (/api/integrations/google). Every signed-in
-// person may look at their own; whether they may connect (only company addresses) is decided
-// in the service, on every step.
+// The company mailbox (/api/integrations/google). Every signed-in person may look at it;
+// connecting, the signature and removing it need the "settings" permission, checked in the
+// service on every step.
 const router = Router();
 
 router.use(requireAuth);

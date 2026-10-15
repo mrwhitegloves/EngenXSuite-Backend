@@ -4,17 +4,17 @@ import { sendMessage } from '../integrations/google/gmail.js';
 import { logger } from '../infra/logger.js';
 import { enqueue } from '../infra/queues.js';
 import { writeAudit } from '../lib/audit.js';
-import { badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
+import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { keyFromUrl, readObject } from '../infra/storage.js';
 import { runListQuery } from '../lib/queryBuilder.js';
-import { scopeFilter } from '../lib/scopeFilter.js';
+import { can, getScope } from '../lib/can.js';
+import { MATCH_NOTHING, scopeFilter } from '../lib/scopeFilter.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { Email, EmailThread } from '../models/email.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { PipelineStage } from '../models/pipelineStage.model.js';
 import { User } from '../models/user.model.js';
-import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { loadAccountForAction } from './accounts.service.js';
 import { findSendableDocument } from './documents.service.js';
 import {
@@ -24,33 +24,60 @@ import {
   uploadPrefixOf,
 } from './emailFiles.service.js';
 import { classifyThread, keepMessage, syncMailbox } from './emailSync.service.js';
-import { getGoogleAccessToken } from './googleConnection.service.js';
+import { getCompanyMailbox, getGoogleAccessToken } from './googleConnection.service.js';
 
-// Customer mail in the CRM: reading conversations, answering from one's own mailbox, and the
-// AI's help. Bringing mail in is services/emailSync.service.js.
+// Customer mail in the CRM: reading conversations, answering, and the AI's help. All mail
+// comes from and goes out of ONE company mailbox (decision 0014). Bringing mail in is
+// services/emailSync.service.js.
 //
-// WHO SEES WHAT (phase 06, section 8):
-//   - a conversation in my own mailbox: me, always;
-//   - a conversation that is linked to a company: also my manager and the CEO, by the "email"
-//     permission (own / team / all);
-//   - a conversation that is linked to nothing: only its owner.
-// Answering is always from one's OWN mailbox: only the owner of a conversation can reply in it.
+// WHO SEES WHAT (founder decision 2026-10-15): the CRM's own access rules. A conversation
+// about a company or a lead is seen by everyone who may see that company or that lead (an
+// agent: their own; a manager: their team's; the CEO: all). A conversation linked to nothing
+// is seen only by someone who sees every company. Anyone who sees a conversation and may write
+// mail can answer in it; the mail goes out from the company mailbox, and the CRM keeps who sent
+// it.
 
 const FEATURE = 'email';
-const OWNERSHIP = { ownerField: 'userId' };
-const sameId = (a, b) => a != null && b != null && String(a) === String(b);
+const NOT_DELETED = { deletedAt: null };
+const NOT_CONNECTED =
+  'The company mailbox is not connected. Someone who manages the settings connects it under Mail and calendar.';
+const ids = (rows) => rows.map((row) => row._id);
 
-/** The conversations a person may see. */
-export const visibleThreads = (actor) => ({
-  $or: [
-    { userId: actor._id },
-    { $and: [scopeFilter(actor, FEATURE, OWNERSHIP), { accountId: { $ne: null } }] },
-  ],
-});
+/** The conversations a person may see (a MongoDB filter). */
+export async function visibleThreads(actor) {
+  if (getScope(actor, FEATURE, 'view') === null) return MATCH_NOTHING;
+  if (getScope(actor, 'accounts', 'view') === 'all') return {};
+  const [accounts, leads] = await Promise.all([
+    Account.find({ $and: [scopeFilter(actor, 'accounts'), NOT_DELETED] })
+      .select('_id')
+      .lean(),
+    Opportunity.find({ $and: [scopeFilter(actor, 'opportunities'), NOT_DELETED] })
+      .select('_id')
+      .lean(),
+  ]);
+  return {
+    $or: [{ accountId: { $in: ids(accounts) } }, { opportunityId: { $in: ids(leads) } }],
+  };
+}
+
+/** Conversations about companies and leads I own: "mine" in the Inbox. */
+async function myThreads(actor) {
+  const [accounts, leads] = await Promise.all([
+    Account.find({ ownerId: actor._id, ...NOT_DELETED })
+      .select('_id')
+      .lean(),
+    Opportunity.find({ ownerId: actor._id, ...NOT_DELETED })
+      .select('_id')
+      .lean(),
+  ]);
+  return {
+    $or: [{ accountId: { $in: ids(accounts) } }, { opportunityId: { $in: ids(leads) } }],
+  };
+}
 
 export async function loadThreadForViewer(actor, threadId) {
   const thread = await EmailThread.findOne({
-    $and: [{ _id: threadId }, visibleThreads(actor)],
+    $and: [{ _id: threadId }, await visibleThreads(actor)],
   }).lean();
   if (!thread) throw notFound('Conversation not found');
   return thread;
@@ -88,7 +115,6 @@ function toThreadView(thread, names, actor) {
     const item = id && list.get(String(id));
     return item ? { id: String(item._id), name: item.name } : null;
   };
-  const isMine = sameId(thread.userId, actor._id);
   return {
     id: String(thread._id),
     subject: thread.subject ?? '(no subject)',
@@ -112,7 +138,8 @@ function toThreadView(thread, names, actor) {
           at: thread.ai.at,
         }
       : null,
-    permissions: { canReply: isMine },
+    // The answer goes out from the company mailbox.
+    permissions: { canReply: can(actor, 'create', { feature: FEATURE }) },
   };
 }
 
@@ -125,14 +152,18 @@ export async function listThreads(actor, query) {
   const escaped = query.search?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const filter = {
     $and: [
-      visibleThreads(actor),
+      await visibleThreads(actor),
       query.view === 'waiting' ? { lastDirection: 'inbound' } : {},
-      query.view === 'mine' ? { userId: actor._id } : {},
+      query.view === 'mine' ? await myThreads(actor) : {},
       query.view === 'follow_up'
         ? {
-            userId: actor._id,
-            lastDirection: 'outbound',
-            lastMessageAt: { $lte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+            $and: [
+              await myThreads(actor),
+              {
+                lastDirection: 'outbound',
+                lastMessageAt: { $lte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+              },
+            ],
           }
         : {},
       query.accountId ? { accountId: query.accountId } : {},
@@ -166,6 +197,13 @@ export async function getThread(actor, threadId) {
     Email.find({ threadId: thread._id }).sort({ sentAt: 1 }).lean(),
   ]);
   const files = await Promise.all(emails.map((email) => attachmentViews(email.attachments)));
+  // Who of us sent each mail from the CRM (they all go out from the company mailbox).
+  const senders = await User.find({
+    _id: { $in: emails.map((email) => email.sentByUserId).filter(Boolean) },
+  })
+    .select('name')
+    .lean();
+  const senderName = new Map(senders.map((user) => [String(user._id), user.name]));
   return {
     ...toThreadView(thread, names, actor),
     messages: emails.map((email, index) => ({
@@ -178,6 +216,7 @@ export async function getThread(actor, threadId) {
       sentAt: email.sentAt,
       text: email.text ?? '',
       html: email.html ?? null,
+      sentBy: email.sentByUserId ? (senderName.get(String(email.sentByUserId)) ?? null) : null,
       // Each with a link that opens for an hour.
       attachments: files[index],
     })),
@@ -196,7 +235,7 @@ export function uploadAttachment(actor, file) {
 export async function listAccountFiles(actor, accountId) {
   const account = await loadAccountForAction(actor, accountId, 'view');
   const threads = await EmailThread.find({
-    $and: [{ accountId: account._id }, visibleThreads(actor)],
+    $and: [{ accountId: account._id }, await visibleThreads(actor)],
   })
     .select('_id subject')
     .lean();
@@ -240,7 +279,9 @@ async function readAttachments(actor, refs = []) {
       const email = await Email.findOne({ 'attachments.url': ref.url }).lean();
       const isVisible =
         email &&
-        (await EmailThread.exists({ $and: [{ _id: email.threadId }, visibleThreads(actor)] }));
+        (await EmailThread.exists({
+          $and: [{ _id: email.threadId }, await visibleThreads(actor)],
+        }));
       if (isVisible) meta = email.attachments.find((file) => file.url === ref.url);
       // Or a document kept for a company the sender may see.
       if (!meta) meta = await findSendableDocument(actor, ref.url);
@@ -260,9 +301,9 @@ async function readAttachments(actor, refs = []) {
   return files;
 }
 
-/** What the Inbox needs to know about me: is my mailbox connected, when was it last read. */
-export async function getMailboxStatus(actor) {
-  const connection = await UserGoogleConnection.findOne({ userId: actor._id }).lean();
+/** What the Inbox needs to know: is the company mailbox connected, when was it last read. */
+export async function getMailboxStatus() {
+  const connection = await getCompanyMailbox();
   return {
     isConnected: connection?.status === 'connected',
     needsReconnect: connection?.status === 'needs_reconnect',
@@ -273,50 +314,45 @@ export async function getMailboxStatus(actor) {
 }
 
 /**
- * Bring my mailbox up to date now. With a queue it runs in the background; without one, here.
+ * Bring the company mailbox up to date now. With a queue it runs in the background; without
+ * one, here.
  * @returns {Promise<{ started: true }>}
  */
-export async function requestSync(actor) {
-  const status = await getMailboxStatus(actor);
-  if (!status.isConnected)
-    throw conflict('Connect your Gmail first (My profile → Mail and calendar).');
+export async function requestSync() {
+  const mailbox = await getCompanyMailbox();
+  if (mailbox?.status !== 'connected') throw conflict(NOT_CONNECTED);
   try {
     await enqueue(
       'messaging',
       JOB_NAMES.emailSync,
-      { userId: String(actor._id) },
-      { jobId: `email-sync-${actor._id}-${Math.floor(Date.now() / 30_000)}` },
+      { userId: String(mailbox.userId) },
+      { jobId: `email-sync-${mailbox.userId}-${Math.floor(Date.now() / 30_000)}` },
     );
   } catch {
     setImmediate(() =>
-      syncMailbox(actor._id).catch((error) => logger.error({ err: error }, 'Mail sync failed')),
+      syncMailbox().catch((error) => logger.error({ err: error }, 'Mail sync failed')),
     );
   }
   return { started: true };
 }
 
 /**
- * Send a mail from my own mailbox: an answer inside a conversation, or a new mail.
+ * Send a mail from the company mailbox: an answer inside a conversation, or a new mail. The
+ * CRM keeps who of us sent it.
  * @param {{ threadId?: string, to?: string[], cc?: string[], subject?: string, text: string,
  *           attachments?: { url: string, filename?: string, mimeType?: string }[] }} mail
  *        Validated. With threadId the recipients and the subject come from the conversation
  *        unless given.
  */
 export async function sendEmail(actor, mail, context = {}) {
-  const connection = await UserGoogleConnection.findOne({
-    userId: actor._id,
-    status: 'connected',
-  }).lean();
-  if (!connection) throw conflict('Connect your Gmail first (My profile → Mail and calendar).');
+  const connection = await getCompanyMailbox();
+  if (connection?.status !== 'connected') throw conflict(NOT_CONNECTED);
   const own = connection.googleEmail;
 
   let thread = null;
   let answered = null;
   if (mail.threadId) {
     thread = await loadThreadForViewer(actor, mail.threadId);
-    if (!sameId(thread.userId, actor._id)) {
-      throw forbidden('You can answer only in conversations of your own mailbox.');
-    }
     // The newest message of the customer (or, failing that, the newest at all) is answered.
     const emails = await Email.find({ threadId: thread._id }).sort({ sentAt: -1 }).limit(10).lean();
     answered = emails.find((email) => email.direction === 'inbound') ?? emails[0] ?? null;
@@ -338,7 +374,7 @@ export async function sendEmail(actor, mail, context = {}) {
   if (!subject) throw badRequest('Write a subject.', [{ field: 'subject' }]);
 
   const attachments = await readAttachments(actor, mail.attachments);
-  const token = await getGoogleAccessToken(actor._id);
+  const token = await getGoogleAccessToken();
   const sent = await sendMessage(token, {
     attachments,
     from: own,
@@ -352,8 +388,9 @@ export async function sendEmail(actor, mail, context = {}) {
   });
   // What was sent is kept like any other mail of that conversation. A new mail to somebody who
   // is not in the CRM is sent, but not kept (the rule of the sync).
-  const kept = await keepMessage(token, { userId: actor._id, googleEmail: own }, sent.id, {
+  const kept = await keepMessage(token, { userId: connection.userId, googleEmail: own }, sent.id, {
     force: Boolean(thread),
+    sentBy: actor._id,
   });
   await writeAudit({
     actor,
@@ -378,16 +415,13 @@ export async function classifyNow(actor, threadId) {
 }
 
 /**
- * A draft answer for a conversation of my mailbox. Nothing is sent: the person reads, changes
+ * A draft answer for a conversation. Nothing is sent: the person reads, changes
  * and sends it themselves.
  * @param {{ instruction?: string }} options  Validated
  * @returns {Promise<{ body: string }>}
  */
 export async function draftAnswer(actor, threadId, { instruction } = {}) {
   const thread = await loadThreadForViewer(actor, threadId);
-  if (!sameId(thread.userId, actor._id)) {
-    throw forbidden('You can answer only in conversations of your own mailbox.');
-  }
   const [emails, contact, account, lead] = await Promise.all([
     Email.find({ threadId: thread._id }).sort({ sentAt: -1 }).limit(6).lean(),
     thread.contactId ? Contact.findById(thread.contactId).select('name designation').lean() : null,
@@ -445,9 +479,6 @@ export async function writeWithAi(actor, request) {
   let leadId = null;
   if (request.threadId) {
     thread = await loadThreadForViewer(actor, request.threadId);
-    if (!sameId(thread.userId, actor._id)) {
-      throw forbidden('You can write only in conversations of your own mailbox.');
-    }
     emails = await Email.find({ threadId: thread._id }).sort({ sentAt: -1 }).limit(12).lean();
     accountId = thread.accountId;
     contactId = thread.contactId;
@@ -469,7 +500,7 @@ export async function writeWithAi(actor, request) {
     leadId ? Opportunity.findById(leadId).select('name requirement stageId').lean() : null,
     // For a new mail: what was talked about before with this company, in a line each.
     !thread && accountId
-      ? EmailThread.find({ $and: [{ accountId }, visibleThreads(actor)] })
+      ? EmailThread.find({ $and: [{ accountId }, await visibleThreads(actor)] })
           .select('subject lastMessageAt lastDirection snippet ai.summary')
           .sort({ lastMessageAt: -1 })
           .limit(5)

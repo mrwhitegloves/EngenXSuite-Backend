@@ -261,17 +261,21 @@ beforeEach(async () => {
   });
   accountId = created.body.data.account.id;
   contactId = String((await Contact.findOne({ email: CUSTOMER }).lean())._id);
-  await completeConnect(asha, {
-    accessToken: 'access',
-    refreshToken: 'refresh',
-    expiresInSec: 3600,
-    scopes: [
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/calendar.events',
-    ],
-    googleEmail: OWN,
-    hostedDomain: 'engenx.in',
-  });
+  // The company mailbox, connected once by the CEO for everyone (decision 0014).
+  await completeConnect(
+    await loadRequestUser((await User.findOne({ email: 'ceo@engenx.in' }))._id),
+    {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSec: 3600,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+      googleEmail: OWN,
+      hostedDomain: 'engenx.in',
+    },
+  );
 });
 
 describe('files on customer mail', () => {
@@ -394,19 +398,7 @@ describe('files on customer mail', () => {
     stored.set('backups/2026-10-12.gz', Buffer.from('everything'));
     const before = mailbox.messages.length;
 
-    // Omar has a mailbox of his own, but none of these files is his.
-    const omar = await loadRequestUser((await User.findOne({ email: 'omar@engenx.in' }))._id);
-    await completeConnect(omar, {
-      accessToken: 'access',
-      refreshToken: 'refresh',
-      expiresInSec: 3600,
-      scopes: [
-        'https://www.googleapis.com/auth/gmail.modify',
-        'https://www.googleapis.com/auth/calendar.events',
-      ],
-      googleEmail: 'omar@engenx.in',
-      hostedDomain: 'engenx.in',
-    });
+    // Omar writes from the same company mailbox, but none of these files is his to send.
     const send = (client, url) =>
       client
         .post('/api/emails/send')
@@ -462,10 +454,8 @@ describe('the AI writes a mail', () => {
     expect(await Email.countDocuments()).toBe(1);
     expect(await AiRun.countDocuments({ task: 'writeEmail' })).toBe(2);
 
-    // Only in one's own mailbox; and an answer needs a customer message.
-    expect(
-      (await asCeo.post('/api/emails/write').send({ mode: 'reply', threadId: thread.id })).status,
-    ).toBe(403);
+    // Everyone who sees the conversation may write in it (decision 0014: one company mailbox);
+    // somebody who cannot see it gets "not found".
     expect(
       (await asOther.post('/api/emails/write').send({ mode: 'reply', threadId: thread.id })).status,
     ).toBe(404);
@@ -564,7 +554,7 @@ describe('the AI helps on a conversation', () => {
     expect(answer.startAt).toBe('2026-10-16T09:30:00.000Z');
   });
 
-  it('a check and three versions of my mail, only in my own mailbox', async () => {
+  it('a check and three versions of my mail, for whoever sees the conversation', async () => {
     aiAnswers = [
       {
         isReadyToSend: false,
@@ -606,9 +596,9 @@ describe('the AI helps on a conversation', () => {
       instruction: 'Agree to Friday.',
       customer: { person: 'Asha Verma', company: 'Bharat Forge' },
     });
-    // The CEO reads the conversation but does not write in another person's mailbox.
-    expect((await assist(asCeo, { kind: 'variants' })).status).toBe(403);
-    expect((await assist(asCeo, { kind: 'review', draft: 'Hi' })).status).toBe(403);
+    // Somebody who cannot see the conversation gets "not found" (decision 0014: the CEO, who
+    // sees it, may now write in it too).
+    expect((await assist(asOther, { kind: 'variants' })).status).toBe(404);
     expect(mailbox.messages).toHaveLength(1); // nothing was sent
   });
 
@@ -712,13 +702,15 @@ describe('what a person decides about a conversation', () => {
     });
     expect((await entries()).map((entry) => String(entry.accountId))).toEqual([otherId]);
 
-    // On nothing: only its owner sees it, and it leaves the timelines.
-    expect((await link(asAsha, {})).body.data.account).toBeNull();
+    // On nothing: it leaves the timelines, and only someone who sees every company (the CEO)
+    // still sees it (decision 0014); the agent no longer does.
+    expect((await link(asAsha, {})).body.data).toBeNull();
     expect(await entries()).toHaveLength(0);
-    expect((await asCeo.get(`/api/emails/threads/${thread.id}`)).status).toBe(404);
+    expect((await asAsha.get(`/api/emails/threads/${thread.id}`)).status).toBe(404);
+    expect((await asCeo.get(`/api/emails/threads/${thread.id}`)).status).toBe(200);
 
     // Back on the first company and its person: the entry is there again.
-    const back = await link(asAsha, { accountId, contactId });
+    const back = await link(asCeo, { accountId, contactId });
     expect(back.body.data).toMatchObject({
       account: { name: 'Bharat Forge' },
       contact: { name: 'Asha Verma' },
@@ -759,11 +751,13 @@ describe('what a person decides about a conversation', () => {
 
     const again = { email: 'vikram@newfoundry.example', contactName: 'V', accountName: 'X' };
     expect((await asAsha.post('/api/emails/bring-in').send(again)).status).toBe(409);
-    // Neither a company nor a new name; and a person without a mailbox.
+    // Neither a company nor a new name; and no company mailbox connected.
     expect(
       (await asAsha.post('/api/emails/bring-in').send({ email: 'a@b.example', contactName: 'A' }))
         .status,
     ).toBe(400);
+    const { UserGoogleConnection } = await import('../models/userGoogleConnection.model.js');
+    await UserGoogleConnection.deleteMany({});
     expect(
       (
         await asCeo
@@ -792,14 +786,14 @@ describe('what a person decides about a conversation', () => {
     expect(stored.size).toBe(1);
   });
 
-  it('my signature is kept with my connection', async () => {
-    const saved = await asAsha
+  it('the signature of the company mailbox is set by someone who manages the settings', async () => {
+    const saved = await asCeo
       .patch('/api/integrations/google/signature')
-      .send({ signature: 'Asha Agent\nSales, +91 90000 00000' });
-    expect(saved.body.data.connection.signature).toBe('Asha Agent\nSales, +91 90000 00000');
+      .send({ signature: 'EngenX Sales\n+91 90000 00000' });
+    expect(saved.body.data.connection.signature).toBe('EngenX Sales\n+91 90000 00000');
     expect(
-      (await asCeo.patch('/api/integrations/google/signature').send({ signature: 'x' })).status,
-    ).toBe(409); // no connection
+      (await asAsha.patch('/api/integrations/google/signature').send({ signature: 'x' })).status,
+    ).toBe(403);
   });
 });
 
@@ -1296,6 +1290,8 @@ describe('bulk mail', () => {
       ['whatsapp', '+919811112222', 'person', 'Kunal CEO'],
     ]);
     expect((await asCeo.get('/api/campaigns/opt-outs?search=nova')).body.data).toHaveLength(1);
+    const { AuditLog } = await import('../models/auditLog.model.js');
+    expect(await AuditLog.countDocuments({ action: 'bulk_opt_out.added' })).toBe(2);
     expect((await asCeo.get('/api/campaigns/opt-outs?channel=whatsapp')).body.data).toHaveLength(1);
     // A person without bulk sending does not see or change it.
     expect((await asAsha.get('/api/campaigns/opt-outs')).status).toBe(403);
@@ -1384,7 +1380,7 @@ describe('bulk mail', () => {
     const waiting = (await asCeo.get(`/api/campaigns/${id}`)).body.data;
     expect(waiting.status).toBe('paused');
     expect(waiting.pauseReason).toMatch(
-      /^It could not start at the planned time\. Connect your Gmail/,
+      /^It could not start at the planned time\. The company mailbox is not connected/,
     );
     expect(await runCampaignStep(id)).toBe('idle');
     expect(mailbox.messages).toHaveLength(before);

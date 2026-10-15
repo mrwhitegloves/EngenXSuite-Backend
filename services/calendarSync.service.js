@@ -4,12 +4,13 @@ import { logger } from '../infra/logger.js';
 import { emitToAll } from '../infra/realtime.js';
 import { createAppError } from '../lib/errors.js';
 import { Contact } from '../models/contact.model.js';
+import { Account } from '../models/account.model.js';
 import { Meeting } from '../models/meeting.model.js';
 import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
 import { recordActivity } from './activities.service.js';
 import { getGoogleAccessToken } from './googleConnection.service.js';
 
-// Bringing changes from a connected Google Calendar into the CRM.
+// Bringing changes from the company's Google Calendar (decision 0014) into the CRM.
 //
 //   - An event that IS a meeting of the CRM: a new time, title or place, the guests' answers
 //     and a cancellation are taken over.
@@ -82,12 +83,17 @@ async function applyToMeeting(meeting, event, contactsByEmail) {
   return true;
 }
 
-/** An event made in Google, with a person of the CRM as a guest, becomes a meeting. */
-async function adoptEvent(userId, event, contactsByEmail, now) {
+/**
+ * An event made in Google, with a person of the CRM as a guest, becomes a meeting. It is put on
+ * the owner of that person's company (else on the person the mailbox is stored under).
+ */
+async function adoptEvent(mailboxUserId, event, contactsByEmail, now) {
   if (event.isCancelled || !event.startAt || !event.endAt || event.endAt < now) return false;
   const attendees = toAttendees(event, contactsByEmail);
   if (attendees.length === 0) return false;
   const first = contactsByEmail.get(attendees[0].email);
+  const company = await Account.findById(first.accountId).select('ownerId').lean();
+  const userId = company?.ownerId ?? mailboxUserId;
   let meeting;
   try {
     meeting = await Meeting.create({
@@ -124,14 +130,14 @@ async function adoptEvent(userId, event, contactsByEmail, now) {
 }
 
 /**
- * Bring one person's Google Calendar changes into the CRM.
+ * Bring the company calendar's changes into the CRM.
  * @param {Date} [now]  Only tests pass it
  * @returns {Promise<{ skipped?: string, events?: number, changed?: number }>}
  */
-export async function syncCalendar(userId, now = new Date()) {
-  const connection = await UserGoogleConnection.findOne({ userId, status: 'connected' }).lean();
+export async function syncCalendar(now = new Date()) {
+  const connection = await UserGoogleConnection.findOne({ status: 'connected' }).lean();
   if (!connection) return { skipped: 'not connected' };
-  const token = await getGoogleAccessToken(userId);
+  const token = await getGoogleAccessToken();
   let page;
   try {
     page = await listChangedEvents(token, {
@@ -155,16 +161,13 @@ export async function syncCalendar(userId, now = new Date()) {
   let changed = 0;
   for (const event of page.events) {
     try {
-      const meeting = await Meeting.findOne({
-        organizerId: userId,
-        googleEventId: event.id,
-      }).lean();
+      const meeting = await Meeting.findOne({ googleEventId: event.id }).lean();
       const didChange = meeting
         ? await applyToMeeting(meeting, event, contactsByEmail)
-        : await adoptEvent(userId, event, contactsByEmail, now);
+        : await adoptEvent(connection.userId, event, contactsByEmail, now);
       if (didChange) changed += 1;
     } catch (error) {
-      logger.warn({ err: error, userId: String(userId) }, 'A calendar event was not taken over');
+      logger.warn({ err: error }, 'A calendar event was not taken over');
     }
   }
   await UserGoogleConnection.updateOne(
@@ -180,11 +183,15 @@ export async function syncCalendar(userId, now = new Date()) {
   return { events: page.events.length, changed };
 }
 
-/** Read my Google Calendar now (the button on the Calendar screen). */
-export async function requestCalendarSync(actor) {
-  const result = await syncCalendar(actor._id);
+/** Read the company calendar now (the button on the Calendar screen). */
+export async function requestCalendarSync() {
+  const result = await syncCalendar();
   if (result.skipped) {
-    throw createAppError('GOOGLE_NOT_CONNECTED', 409, 'Your Google Calendar is not connected.');
+    throw createAppError(
+      'GOOGLE_NOT_CONNECTED',
+      409,
+      'The company calendar is not connected. Someone who manages the settings connects it under Mail and calendar.',
+    );
   }
   return result;
 }

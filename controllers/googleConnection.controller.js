@@ -14,7 +14,7 @@ import {
   updateSignature,
 } from '../services/googleConnection.service.js';
 
-// A person's own connection to Gmail and Calendar.
+// The company mailbox (Gmail and Calendar), connected once for the whole CRM.
 // Two of these are opened by the browser itself (the way to Google and back), so they answer
 // with a redirect to the "Mail and calendar" page and a short reason code, never with details.
 
@@ -24,7 +24,6 @@ const REASONS = {
   FORBIDDEN: 'not_allowed',
   GOOGLE_NOT_CONFIGURED: 'not_set_up',
   GOOGLE_WRONG_DOMAIN: 'wrong_domain',
-  GOOGLE_WRONG_ACCOUNT: 'wrong_account',
   GOOGLE_PERMISSION_MISSING: 'permission_missing',
 };
 
@@ -34,10 +33,10 @@ export async function getConnection(req, res) {
 }
 
 // GET /api/integrations/google/connect: send my browser to Google to give the permission.
-export function startConnect(req, res, next) {
+export async function startConnect(req, res, next) {
   let options;
   try {
-    options = workspaceAuthOptions(prepareConnect(req.user).loginHint);
+    options = workspaceAuthOptions((await prepareConnect(req.user)).loginHint);
   } catch (error) {
     return backTo(res, REASONS[error?.code] ?? 'failed');
   }

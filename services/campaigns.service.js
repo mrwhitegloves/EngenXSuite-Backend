@@ -13,7 +13,7 @@ import { BundleMember } from '../models/bundle.model.js';
 import { Campaign, CampaignRecipient, RECIPIENT_STATUSES } from '../models/campaign.model.js';
 import { EmailThread } from '../models/email.model.js';
 import { User } from '../models/user.model.js';
-import { UserGoogleConnection } from '../models/userGoogleConnection.model.js';
+import { isCompanyMailboxConnected } from './googleConnection.service.js';
 import { loadRequestUser } from './auth.service.js';
 import { cleanAddress, findOptedOut, isOptedOut, stopLinkFor } from './bulkOptOuts.service.js';
 import { createBundle, describeMembers, loadBundle } from './bundles.service.js';
@@ -286,10 +286,8 @@ const UNATTENDED =
  */
 async function decideMail(campaign, recipient, now) {
   if (await isOptedOut('email', recipient.email)) return { skip: SAID_NO.email };
-  const thread = await EmailThread.findOne({
-    userId: campaign.createdBy,
-    participants: recipient.email,
-  })
+  // Every mail is in the one company mailbox (decision 0014).
+  const thread = await EmailThread.findOne({ participants: recipient.email })
     .sort({ lastMessageAt: -1 })
     .lean();
   if (!thread) return { action: 'new' };
@@ -621,11 +619,11 @@ async function assertCanSend(campaign) {
       throw conflict('WhatsApp is not set up yet, so nothing can be sent.');
     return;
   }
-  const isConnected = await UserGoogleConnection.exists({
-    userId: campaign.createdBy,
-    status: 'connected',
-  });
-  if (!isConnected) throw conflict('Connect your Gmail first (My profile → Mail and calendar).');
+  if (!(await isCompanyMailboxConnected())) {
+    throw conflict(
+      'The company mailbox is not connected. Someone who manages the settings connects it under Mail and calendar.',
+    );
+  }
 }
 
 /**

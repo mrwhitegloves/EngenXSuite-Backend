@@ -62,6 +62,9 @@ const emailSchema = new mongoose.Schema(
   {
     threadId: { type: ObjectId, ref: 'EmailThread', required: true },
     userId: { type: ObjectId, ref: 'User', required: true },
+    // The CRM user who sent it, when it was sent from the CRM (every mail goes out from the
+    // one company mailbox, so this is how the CRM knows who wrote it).
+    sentByUserId: { type: ObjectId, ref: 'User' },
     gmailMessageId: { type: String, required: true },
     // inbound: the customer wrote. outbound: the mailbox owner wrote.
     direction: { type: String, enum: ['inbound', 'outbound'], required: true },

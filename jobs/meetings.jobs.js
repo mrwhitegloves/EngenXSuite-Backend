@@ -10,12 +10,11 @@ export async function runMeetingRemindersJob() {
 }
 
 /**
- * Bring one person's Google Calendar changes into the CRM. Safe to run twice: an event is one
+ * Bring the company calendar's changes into the CRM. Safe to run twice: an event is one
  * meeting, and an unchanged event changes nothing.
- * @param {{ userId: string }} data
  */
-export async function runCalendarSyncJob({ userId }) {
-  return syncCalendar(userId);
+export async function runCalendarSyncJob() {
+  return syncCalendar();
 }
 
 /** Every few minutes: one sync job per connected calendar. */

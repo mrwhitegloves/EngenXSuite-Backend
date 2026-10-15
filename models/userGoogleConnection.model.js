@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 
-// One person's permission for the CRM to use their Gmail and Calendar. At most one per user.
+// The company mailbox: the permission for the CRM to use ONE Gmail and Calendar for everyone
+// (decision 0014). There is at most one document. `userId` is the id the mailbox's mail is
+// stored under (the person who first connected it); `connectedBy` who connected it last.
 // The tokens are kept sealed (lib/secretBox.js) and never leave the server.
 // Written only by services/googleConnection.service.js. Schema only: no methods (decision 0005).
 
@@ -14,7 +16,7 @@ export const GOOGLE_CONNECTION_STATUSES = [
 const userGoogleConnectionSchema = new mongoose.Schema(
   {
     userId: { type: ObjectId, ref: 'User', required: true, unique: true },
-    // The Google account that gave the permission: always the user's own company address.
+    // The Google account that gave the permission: a company address (kunal@engenx.in).
     googleEmail: { type: String, required: true, lowercase: true, trim: true },
     scopes: { type: [String], default: [] },
     // Sealed. `select: false`: a query has to ask for them by name.
@@ -28,9 +30,10 @@ const userGoogleConnectionSchema = new mongoose.Schema(
       default: 'connected',
     },
     lastError: { type: String, maxlength: 300 },
-    // The lines the person puts under their mails (plain text).
+    // The lines under every mail of the company mailbox (plain text).
     signature: { type: String, maxlength: 1000 },
     connectedAt: { type: Date, required: true },
+    connectedBy: { type: ObjectId, ref: 'User' },
     // Where the mailbox and calendar sync stand (filled by the sync jobs).
     gmail: {
       historyId: { type: String },

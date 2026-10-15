@@ -186,17 +186,21 @@ beforeEach(async () => {
   });
   accountId = created.body.data.account.id;
   leadId = created.body.data.lead.id;
-  await completeConnect(asha, {
-    accessToken: 'access',
-    refreshToken: 'refresh',
-    expiresInSec: 3600,
-    scopes: [
-      'https://www.googleapis.com/auth/gmail.modify',
-      'https://www.googleapis.com/auth/calendar.events',
-    ],
-    googleEmail: OWN,
-    hostedDomain: 'engenx.in',
-  });
+  // The company mailbox, connected once by the CEO for everyone (decision 0014).
+  await completeConnect(
+    await loadRequestUser((await User.findOne({ email: 'ceo@engenx.in' }))._id),
+    {
+      accessToken: 'access',
+      refreshToken: 'refresh',
+      expiresInSec: 3600,
+      scopes: [
+        'https://www.googleapis.com/auth/gmail.modify',
+        'https://www.googleapis.com/auth/calendar.events',
+      ],
+      googleEmail: OWN,
+      hostedDomain: 'engenx.in',
+    },
+  );
 });
 
 describe('reading a mailbox', () => {
@@ -311,9 +315,10 @@ describe('reading a mailbox', () => {
 });
 
 describe('who sees a conversation', () => {
-  it('the owner; the manager line when it is linked; nobody else', async () => {
+  it('whoever may see its company or lead; linked to nothing: only who sees every company', async () => {
     deliver({ from: CUSTOMER, subject: 'Linked', thread: 't1' });
-    // People of two companies in one mail: linked to nothing, so only the owner sees it.
+    // People of two companies in one mail: linked to nothing, so only someone who sees every
+    // company sees it (decision 0014: the CRM's access rules decide).
     await asCeo.post('/api/accounts/quick-add').send({
       account: { name: 'Thermax' },
       contacts: [{ name: 'Ravi Kumar', email: 'ravi@thermax.example' }],
@@ -321,29 +326,28 @@ describe('who sees a conversation', () => {
     deliver({ from: 'ravi@thermax.example', cc: [CUSTOMER], subject: 'Both of us', thread: 't2' });
     await syncMailbox(asha._id);
 
-    expect((await threadsOf(asAsha)).map((thread) => thread.subject).sort()).toEqual([
+    expect((await threadsOf(asAsha)).map((thread) => thread.subject)).toEqual(['Linked']);
+    expect((await threadsOf(asCeo)).map((thread) => thread.subject).sort()).toEqual([
       'Both of us',
       'Linked',
     ]);
-    expect((await threadsOf(asCeo)).map((thread) => thread.subject)).toEqual(['Linked']);
     expect(await threadsOf(asOther)).toEqual([]);
 
-    const [linked] = await threadsOf(asCeo);
+    const linked = (await threadsOf(asCeo)).find((thread) => thread.subject === 'Linked');
     expect(linked).toMatchObject({
-      owner: { name: 'Asha Agent' },
       contact: { name: 'Asha Verma' },
       account: { name: 'Bharat Forge' },
       lead: { name: 'OEE for press line' },
       isWaitingForUs: true,
-      permissions: { canReply: false }, // the CEO reads; answering is from one's own mailbox
+      permissions: { canReply: true }, // everyone writes from the one company mailbox
     });
     expect((await asCeo.get(`/api/emails/threads/${linked.id}`)).body.data.messages).toHaveLength(
       1,
     );
     expect((await asOther.get(`/api/emails/threads/${linked.id}`)).status).toBe(404);
-    const unlinked = (await threadsOf(asAsha)).find((thread) => thread.subject === 'Both of us');
+    const unlinked = (await threadsOf(asCeo)).find((thread) => thread.subject === 'Both of us');
     expect(unlinked.account).toBeNull();
-    expect((await asCeo.get(`/api/emails/threads/${unlinked.id}`)).status).toBe(404);
+    expect((await asAsha.get(`/api/emails/threads/${unlinked.id}`)).status).toBe(404);
     expect((await threadsOf(asAsha, '?view=waiting&search=linked')).map((t) => t.subject)).toEqual([
       'Linked',
     ]);
@@ -355,7 +359,7 @@ describe('who sees a conversation', () => {
 });
 
 describe('answering', () => {
-  it('goes out from my own mailbox inside the conversation, and is kept', async () => {
+  it('goes out from the company mailbox inside the conversation, and is kept with who sent it', async () => {
     deliver({ from: CUSTOMER, subject: 'Pilot', text: 'Can we talk on Friday?', thread: 't1' });
     await syncMailbox(asha._id);
     const [thread] = await threadsOf(asAsha);
@@ -372,22 +376,26 @@ describe('answering', () => {
     });
 
     const detail = (await asAsha.get(`/api/emails/threads/${thread.id}`)).body.data;
-    expect(detail.messages.map((message) => [message.direction, message.text])).toEqual([
-      ['inbound', 'Can we talk on Friday?'],
-      ['outbound', 'Yes, Friday at 11 works.'],
+    expect(
+      detail.messages.map((message) => [message.direction, message.text, message.sentBy]),
+    ).toEqual([
+      ['inbound', 'Can we talk on Friday?', null],
+      ['outbound', 'Yes, Friday at 11 works.', 'Asha Agent'],
     ]);
     expect(detail.isWaitingForUs).toBe(false);
     expect(
       (await Activity.find({ type: 'EMAIL' }).sort({ _id: 1 }).lean()).map((entry) => entry.title),
     ).toEqual(['Email from Asha Verma: Pilot', 'Email to Asha Verma: Re: Pilot']);
 
-    // Someone who can read the conversation still cannot answer from another person's mailbox.
-    expect(
-      (await asCeo.post('/api/emails/send').send({ threadId: thread.id, text: 'Hi' })).status,
-    ).toBe(409);
+    // Everyone who can read the conversation may answer (decision 0014); the CRM keeps who.
+    const byCeo = await asCeo.post('/api/emails/send').send({ threadId: thread.id, text: 'Hi' });
+    expect(byCeo.status).toBe(200);
+    const again = (await asAsha.get(`/api/emails/threads/${thread.id}`)).body.data;
+    expect(again.messages.at(-1)).toMatchObject({ text: 'Hi', sentBy: 'Kunal CEO' });
+    // Somebody who cannot see it gets "not found".
     expect(
       (await asOther.post('/api/emails/send').send({ threadId: thread.id, text: 'Hi' })).status,
-    ).toBe(409);
+    ).toBe(404);
     expect(
       (await asAsha.post('/api/emails/send').send({ threadId: thread.id, text: '' })).status,
     ).toBe(400);
@@ -406,7 +414,7 @@ describe('answering', () => {
     expect((await asAsha.post('/api/emails/send').send({ text: 'No recipient' })).status).toBe(400);
   });
 
-  it('the AI drafts an answer for the owner to change; it sends nothing', async () => {
+  it('the AI drafts an answer for a person to change; it sends nothing', async () => {
     deliver({ from: CUSTOMER, subject: 'Pilot', text: 'What would the pilot cost?', thread: 't1' });
     await syncMailbox(asha._id);
     const [thread] = await threadsOf(asAsha);
@@ -421,7 +429,9 @@ describe('answering', () => {
     expect(draft.status).toBe(200);
     expect(draft.body.data.body).toContain('[price]');
     expect(mailbox.messages).toHaveLength(before); // nothing was sent
-    expect((await asCeo.post(`/api/emails/threads/${thread.id}/draft`).send({})).status).toBe(403);
+    expect((await asOther.post(`/api/emails/threads/${thread.id}/draft`).send({})).status).toBe(
+      404,
+    );
 
     aiAnswers = [
       {
