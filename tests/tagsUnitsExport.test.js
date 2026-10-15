@@ -69,7 +69,7 @@ beforeEach(async () => {
 });
 
 describe('tags', () => {
-  it('everyone reads tags; only someone with the settings permission manages them', async () => {
+  it('everyone reads and adds tags; only someone with the settings permission changes them', async () => {
     const tag = await makeTag('Key account', { color: 'brand' });
     expect(tag).toMatchObject({ name: 'Key account', color: 'brand' });
     expect((await request(app).get('/api/tags')).status).toBe(401);
@@ -77,10 +77,19 @@ describe('tags', () => {
       expect((await client.get('/api/tags')).body.data.map((item) => item.name)).toEqual([
         'Key account',
       ]);
-      expect((await client.post('/api/tags').send({ name: 'Mine' })).status).toBe(403);
       expect((await client.patch(`/api/tags/${tag.id}`).send({ name: 'X' })).status).toBe(403);
       expect((await client.delete(`/api/tags/${tag.id}`)).status).toBe(403);
     }
+    // Anyone may add a new tag (founder decision 2026-10-15), once per name.
+    const mine = await asAgent.post('/api/tags').send({ name: 'Visited by me', color: 'info' });
+    expect(mine.status).toBe(201);
+    expect(mine.body.data).toMatchObject({ name: 'Visited by me', color: 'info' });
+    expect((await asManager.post('/api/tags').send({ name: 'visited by ME' })).status).toBe(409);
+    expect((await request(app).post('/api/tags').send({ name: 'Nobody' })).status).toBe(401);
+    expect((await asCeo.get('/api/tags')).body.data.map((item) => item.name).sort()).toEqual([
+      'Key account',
+      'Visited by me',
+    ]);
   });
 
   it('refuses the same name in another letter case, and bad input', async () => {
