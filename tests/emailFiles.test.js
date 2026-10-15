@@ -57,7 +57,8 @@ function deliver({
     id,
     threadId: thread ?? `t-${id}`,
     labelIds: labels ?? ['INBOX'],
-    internalDate: String(Date.UTC(2026, 9, 12, 6, mailbox.messages.length)),
+    // Now, one minute apart in the order they arrive (a fixed day went stale as time passed).
+    internalDate: String(Date.now() - 60 * 60 * 1000 + mailbox.messages.length * 60 * 1000),
     snippet: text.slice(0, 60),
     historyId: mailbox.historyId,
     payload: {
