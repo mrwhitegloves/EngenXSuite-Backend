@@ -47,6 +47,7 @@ export const updateCallSettingsBody = z
     announcementEnabled: z.boolean(),
     consentText: z.string().trim().min(5, 'Write the announcement').max(300),
     defaultInboundUserId: objectId.nullable(),
+    browserCallingEnabled: z.boolean(),
   })
   .partial()
   .refine((body) => Object.keys(body).length > 0, { message: 'Nothing to update' });

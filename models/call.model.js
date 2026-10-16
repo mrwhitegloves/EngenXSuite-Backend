@@ -29,6 +29,8 @@ const callSchema = new mongoose.Schema(
   {
     // Plivo's id of the call. Empty for the first moments of a click-to-call.
     plivoCallUuid: { type: String },
+    // How our person took part: on their phone (rung by Plivo) or in the CRM (the browser).
+    via: { type: String, enum: ['phone', 'browser'] },
     direction: { type: String, enum: CALL_DIRECTIONS, required: true },
     // In the international form (+91…). Kept as they were, for matching and history.
     fromNumber: { type: String, required: true },

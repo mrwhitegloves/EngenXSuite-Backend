@@ -29,6 +29,12 @@ const userSchema = new mongoose.Schema(
     isWorkspaceAccount: { type: Boolean, required: true, default: false },
     // The user's own mobile number, used as the agent leg of click-to-call (phase 04).
     phone: { type: String, trim: true },
+    // This person's browser for calls inside the CRM: a Plivo endpoint, made the first time they
+    // use it (services/calls.service.js). Its password is never kept.
+    plivoEndpoint: {
+      id: { type: String },
+      username: { type: String },
+    },
     theme: { type: String, required: true, enum: THEMES, default: 'light' },
     // Master switch: when false no notification is created, stored or delivered for this user.
     notificationsEnabled: { type: Boolean, required: true, default: true },

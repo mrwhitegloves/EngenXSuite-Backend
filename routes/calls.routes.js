@@ -1,5 +1,7 @@
 import { Router } from 'express';
 import {
+  deleteRingtone,
+  getBrowserPhoneSignIn,
   getCallById,
   getCalls,
   getFormOptions,
@@ -7,7 +9,9 @@ import {
   getSettings,
   patchCall,
   patchSettings,
+  postBrowserCall,
   postCall,
+  postRingtone,
   respondConnect,
   respondConsent,
   respondDialResult,
@@ -19,6 +23,7 @@ import { createWebhookHandler } from '../controllers/webhooks/receive.js';
 import { createAiLimiter } from '../middleware/rateLimit.js';
 import { isValidPlivoSignature } from '../integrations/plivo/client.js';
 import { requireAuth } from '../middleware/requireAuth.js';
+import { singleFileUpload } from '../middleware/upload.js';
 import { authorize } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import {
@@ -69,6 +74,14 @@ callsRouter.use(requireAuth);
 callsRouter.post('/', authorize(FEATURE, 'create'), validate({ body: startCallBody }), postCall);
 callsRouter.get('/', authorize(FEATURE, 'view'), validate({ query: listCallsQuery }), getCalls);
 callsRouter.get('/form-options', authorize(FEATURE, 'view'), getFormOptions);
+// Calls inside the CRM: my browser's sign-in, and a call started from it.
+callsRouter.get('/browser-phone', authorize(FEATURE, 'create'), getBrowserPhoneSignIn);
+callsRouter.post(
+  '/browser',
+  authorize(FEATURE, 'create'),
+  validate({ body: startCallBody }),
+  postBrowserCall,
+);
 callsRouter.get('/:id', authorize(FEATURE, 'view'), validate({ params: idParams }), getCallById);
 callsRouter.patch(
   '/:id',
@@ -108,3 +121,10 @@ callSettingsRouter.patch(
   validate({ body: updateCallSettingsBody }),
   patchSettings,
 );
+callSettingsRouter.post(
+  '/ringtone',
+  authorize('settings', 'edit'),
+  singleFileUpload({ maxBytes: 1024 * 1024 }),
+  postRingtone,
+);
+callSettingsRouter.delete('/ringtone', authorize('settings', 'edit'), deleteRingtone);

@@ -5,11 +5,15 @@ import {
   answerConsent,
   answerDialResult,
   answerInbound,
+  getBrowserPhone,
   getCallSettings,
   getCallDetail,
   getCallFormOptions,
   getRecordingLink,
   listCalls,
+  removeRingtone,
+  saveRingtone,
+  startBrowserCall,
   startCall,
   updateCall,
   updateCallSettings,
@@ -60,6 +64,27 @@ export async function getSettings(req, res) {
 // PATCH /api/settings/calls
 export async function patchSettings(req, res) {
   sendOk(res, await updateCallSettings(req.user, req.validated.body, context(req)));
+}
+
+// POST /api/settings/calls/ringtone: our own ringtone for calls into the browser.
+export async function postRingtone(req, res) {
+  sendOk(res, await saveRingtone(req.user, req.file, context(req)));
+}
+
+// DELETE /api/settings/calls/ringtone: back to Plivo's ringtone.
+export async function deleteRingtone(req, res) {
+  sendOk(res, await removeRingtone(req.user, context(req)));
+}
+
+// GET /api/calls/browser-phone: may my browser take part in calls, and its sign-in.
+export async function getBrowserPhoneSignIn(req, res) {
+  sendOk(res, await getBrowserPhone(req.user));
+}
+
+// POST /api/calls/browser: call a contact from my browser (the call is written; the browser
+// then dials through Plivo).
+export async function postBrowserCall(req, res) {
+  sendCreated(res, await startBrowserCall(req.user, req.validated.body, context(req)));
 }
 
 // What Plivo is told at once, as XML. (The webhook receiver has verified and stored the event.)
