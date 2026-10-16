@@ -3,10 +3,13 @@ import {
   getAssignment,
   getInboundLeads,
   getLeadForms,
+  getMetaPageStatus,
   getMetaVerification,
   patchAssignment,
   patchLeadForm,
+  postConnectMetaPage,
   postRetryInboundLead,
+  postSyncMetaForms,
 } from '../controllers/inboundLeads.controller.js';
 import { createWebhookHandler } from '../controllers/webhooks/receive.js';
 import { isValidMetaSignature } from '../integrations/meta/leadAds.js';
@@ -39,6 +42,10 @@ const settings = (action) => [requireAuth, authorize('settings', action)];
 
 export const leadFormsRouter = Router();
 leadFormsRouter.get('/', ...settings('view'), getLeadForms);
+// The one-time connection of the Facebook Page (docs/META_LEADS.md).
+leadFormsRouter.get('/meta/page', ...settings('view'), getMetaPageStatus);
+leadFormsRouter.post('/meta/page/connect', ...settings('edit'), postConnectMetaPage);
+leadFormsRouter.post('/meta/forms/sync', ...settings('edit'), postSyncMetaForms);
 leadFormsRouter.patch(
   '/:id',
   ...settings('edit'),
