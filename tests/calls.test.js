@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import mongoose from 'mongoose';
 import request from 'supertest';
 
 // The Plivo settings exist only for this test file; they are set before the app reads them.
@@ -6,6 +7,7 @@ Object.assign(process.env, {
   PLIVO_AUTH_ID: 'test-auth-id',
   PLIVO_AUTH_TOKEN: 'test-auth-token',
   PLIVO_NUMBER: '918035000000',
+  PLIVO_APP_ID: 'test-app-id',
   API_PUBLIC_URL: 'https://api.example.test',
 });
 
@@ -16,6 +18,9 @@ const placed = [];
 let plivoFails = false;
 // Plivo's own record of a finished leg (what its console shows), by the leg's UUID.
 const plivoRecords = new Map();
+// Browsers (calls inside the CRM): the endpoints Plivo made, and the sign-ins it gave.
+const endpoints = [];
+const tokens = [];
 vi.mock('../integrations/plivo/client.js', async (importActual) => ({
   ...(await importActual()),
   startCall: async (options) => {
@@ -28,6 +33,14 @@ vi.mock('../integrations/plivo/client.js', async (importActual) => ({
     return { requestUuid: `request-${placed.length}` };
   },
   getCallRecord: async (uuid) => plivoRecords.get(uuid) ?? null,
+  createEndpoint: async ({ name, alias }) => {
+    endpoints.push({ name, alias });
+    return { id: `ep-${endpoints.length}`, username: `${name}1610${endpoints.length}` };
+  },
+  createAccessToken: async ({ username, validSec }) => {
+    tokens.push({ username, validSec });
+    return { token: `jwt-for-${username}`, expiresAt: new Date(Date.now() + validSec * 1000) };
+  },
   isValidPlivoSignature: (req) => req.get('x-test-signature') === 'ok',
   downloadRecording: async () => ({ body: Buffer.from('mp3-bytes'), contentType: 'audio/mpeg' }),
 }));
@@ -112,6 +125,8 @@ afterAll(stopTestDb);
 beforeEach(async () => {
   await clearTestDb();
   placed.length = 0;
+  endpoints.length = 0;
+  tokens.length = 0;
   stored.clear();
   plivoFails = false;
   await runSeed({ productName: 'P', companyName: 'C', workspaceDomain: 'engenx.in' });
@@ -872,5 +887,157 @@ describe('the call log', () => {
     // Somebody else's call is "not found".
     expect((await asOther.get(`/api/calls/${mine._id}`)).status).toBe(404);
     expect((await asAgent.get('/api/calls/not-an-id')).status).toBe(400);
+  });
+});
+
+describe('calls inside the CRM (the browser)', () => {
+  const signIn = async (client) => (await client.get('/api/calls/browser-phone')).body.data;
+  const fromBrowser = (username, callId, to = '919876543210', uuid = 'browser-1') =>
+    hook('inbound', {
+      CallUUID: uuid,
+      From: `sip:${username}@phone.plivo.com`,
+      To: to,
+      'X-PH-CallId': callId,
+    });
+
+  it('each person signs in with their own endpoint, made once, for a day', async () => {
+    const first = await signIn(asAgent);
+    expect(first).toMatchObject({ isAvailable: true, ringtoneUrl: null });
+    expect(first.token).toMatch(/^jwt-for-crm/);
+    expect(new Date(first.expiresAt).getTime() - Date.now()).toBeGreaterThan(23 * 3600 * 1000);
+    await signIn(asAgent);
+    expect(endpoints).toHaveLength(1); // made once
+    expect(endpoints[0].alias).toBe(`crm-${agent._id}`);
+    expect(tokens.map((item) => item.username)).toEqual([
+      endpoints.length && first.token.slice('jwt-for-'.length),
+      first.token.slice('jwt-for-'.length),
+    ]);
+    // The token is never kept with the person.
+    const stored = await User.findById(agent._id).lean();
+    expect(stored.plivoEndpoint).toMatchObject({ id: 'ep-1' });
+    expect(JSON.stringify(stored)).not.toContain('jwt-for');
+    expect((await request(app).get('/api/calls/browser-phone')).status).toBe(401);
+
+    // Switched off in Settings → Calls: no browser, and a call from it is refused.
+    await asCeo.patch('/api/settings/calls').send({ browserCallingEnabled: false });
+    expect(await signIn(asAgent)).toEqual({ isAvailable: false });
+    expect((await asAgent.post('/api/calls/browser').send({ contactId })).status).toBe(409);
+  });
+
+  it('a call from the browser dials only the number the CRM wrote for that person', async () => {
+    const username = (await signIn(asAgent)).token.slice('jwt-for-'.length);
+    // Somebody who may not see the contact cannot start it.
+    expect(
+      (await asOther.post('/api/calls/browser').send({ contactId, opportunityId: leadId })).status,
+    ).toBe(404);
+    const started = await asAgent
+      .post('/api/calls/browser')
+      .send({ contactId, opportunityId: leadId });
+    expect(started.status).toBe(201);
+    expect(started.body.data).toMatchObject({ to: '+919876543210' });
+    const { callId } = started.body.data;
+    expect(placed).toHaveLength(0); // no phone is rung
+
+    // Another browser, a wrong number or no call id: ended at once, nothing dialled.
+    for (const [user, id, to] of [
+      ['crmsomeoneelse', callId, '919876543210'],
+      [username, callId, '919111111111'],
+      [username, 'not-an-id', '919876543210'],
+    ]) {
+      const refused = await fromBrowser(user, id, to, `refused-${user}-${to}`);
+      expect(refused.text).not.toContain('<Dial');
+    }
+
+    const answer = await fromBrowser(username, callId);
+    expect(answer.text).toContain('<Dial');
+    expect(answer.text).toContain('callerId="918035000000"');
+    expect(answer.text).toContain('<Number>919876543210</Number>');
+    expect(answer.text).toContain(`dial-result?call=${callId}`);
+    // Asked again: not dialled twice.
+    const again = await fromBrowser(username, callId, '919876543210', 'browser-1b');
+    expect(again.text).not.toContain('<Dial');
+
+    // The customer talks; the call ends as every other call does.
+    await hook(
+      'dial-result',
+      { CallUUID: 'browser-1', DialStatus: 'completed', DialBLegUUID: 'b-leg-1' },
+      { call: callId },
+    );
+    await hook('hangup', { CallUUID: 'browser-1', Duration: '75', TotalCost: '0.004' });
+    const done = await Call.findById(callId).lean();
+    expect(done).toMatchObject({
+      via: 'browser',
+      status: 'completed',
+      plivoCallUuid: 'browser-1',
+    });
+    const detail = (await asAgent.get(`/api/calls/${callId}`)).body.data;
+    expect(detail.legs[0].who).toBe('Our person, in the CRM');
+    expect((await Activity.find({ type: 'CALL' }).lean()).map((entry) => entry.title)).toEqual([
+      'Call to Asha Verma · 1:15',
+    ]);
+
+    // A call the browser did not use in time is refused.
+    const late = (await asAgent.post('/api/calls/browser').send({ contactId })).body.data.callId;
+    // (Straight in the collection: Mongoose keeps createdAt as it was.)
+    await Call.collection.updateOne(
+      { _id: new mongoose.Types.ObjectId(late) },
+      { $set: { createdAt: new Date(Date.now() - 5 * 60000) } },
+    );
+    expect((await fromBrowser(username, late, '919876543210', 'browser-late')).text).not.toContain(
+      '<Dial',
+    );
+  });
+
+  it('a customer’s call rings the browser and the phone together', async () => {
+    const username = (await signIn(asAgent)).token.slice('jwt-for-'.length);
+    const answer = await hook('inbound', {
+      CallUUID: 'both-1',
+      From: '919876543210',
+      To: '918035000000',
+    });
+    const call = await Call.findOne({ plivoCallUuid: 'both-1' }).lean();
+    expect(answer.text).toContain(
+      `<User sipHeaders="CallId=${call._id}">sip:${username}@phone.plivo.com</User>`,
+    );
+    expect(answer.text).toContain('<Number>919000000002</Number>');
+
+    // Without a phone the browser alone rings; with the browser switched off, the phone alone.
+    await User.updateOne({ _id: agent._id }, { $unset: { phone: '' } });
+    const browserOnly = await hook('inbound', {
+      CallUUID: 'both-2',
+      From: '919876543210',
+      To: '918035000000',
+    });
+    expect(browserOnly.text).toContain('<User');
+    expect(browserOnly.text).not.toContain('<Number>919000000002</Number>');
+    await User.updateOne({ _id: agent._id }, { $set: { phone: '+919000000002' } });
+    await asCeo.patch('/api/settings/calls').send({ browserCallingEnabled: false });
+    const phoneOnly = await hook('inbound', {
+      CallUUID: 'both-3',
+      From: '919876543210',
+      To: '918035000000',
+    });
+    expect(phoneOnly.text).not.toContain('<User');
+    expect(phoneOnly.text).toContain('<Number>919000000002</Number>');
+  });
+
+  it('our own ringtone is set in Settings → Calls by who manages the settings', async () => {
+    const upload = (client, type = 'audio/mpeg', name = 'bell.mp3') =>
+      client
+        .post('/api/settings/calls/ringtone')
+        .attach('file', Buffer.from('ID3 bell'), { filename: name, contentType: type });
+    expect((await upload(asAgent)).status).toBe(403);
+    expect((await upload(asCeo, 'text/plain', 'bell.txt')).status).toBe(400);
+    const saved = await upload(asCeo);
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.ringtone.name).toMatch(/bell\.mp3$/);
+    expect(saved.body.data.ringtone.url).toContain('X-Amz-Signature');
+    expect([...stored.keys()].some((key) => key.startsWith('ringtones/'))).toBe(true);
+    // Every browser gets it with its sign-in.
+    expect((await signIn(asAgent)).ringtoneUrl).toContain('ringtones/');
+
+    const removed = await asCeo.delete('/api/settings/calls/ringtone');
+    expect(removed.body.data.ringtone).toBeNull();
+    expect((await signIn(asAgent)).ringtoneUrl).toBeNull();
   });
 });

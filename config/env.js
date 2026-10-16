@@ -79,6 +79,10 @@ const envSchema = z.object({
   PLIVO_AUTH_TOKEN: z.string().min(1).optional(),
   // Our Plivo phone number, with the country code: 918035XXXXXX or +918035XXXXXX.
   PLIVO_NUMBER: z.string().min(8).optional(),
+  // The id of the Plivo Application of our number (console → Voice → Applications). Needed for
+  // calls inside the CRM (the browser): each person's browser is attached to it. Not set: calls
+  // ring the person's phone only, as before.
+  PLIVO_APP_ID: z.string().min(1).optional(),
   // The public HTTPS address of THIS server, for providers that call it (Plivo). Not set: the
   // same as REALTIME_URL. In development: the address of a tunnel.
   API_PUBLIC_URL: z.url().optional(),

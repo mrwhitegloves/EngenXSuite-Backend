@@ -6,10 +6,14 @@ import { enqueue } from '../infra/queues.js';
 import { emitToAll } from '../infra/realtime.js';
 import { isStorageConfigured, toReadableUrl, uploadObject } from '../infra/storage.js';
 import {
+  createAccessToken,
+  createEndpoint,
   dialXml,
   downloadRecording,
   emptyXml,
+  endpointOfCaller,
   getCallRecord,
+  isBrowserCallingConfigured,
   isPlivoConfigured,
   missingPlivoSettings,
   ourNumber,
@@ -62,6 +66,15 @@ const CALL_BACK_DUE_MS = 30 * 60 * 1000;
 const FIRST_RING_SEC = 25;
 const SECOND_RING_SEC = 30;
 const DEFAULT_CONSENT = 'This call may be recorded for quality and training.';
+// A browser's sign-in lasts this long (Plivo's limit is 24 hours); the CRM gets a new one by
+// itself whenever the browser has to sign in again.
+const BROWSER_TOKEN_SEC = 24 * 60 * 60;
+// A call the browser was allowed to make must reach Plivo within this time.
+const BROWSER_START_MS = 2 * 60 * 1000;
+// Our own ringtone: a short sound file.
+const RINGTONE_MAX_BYTES = 1024 * 1024;
+const RINGTONE_TYPES = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/ogg'];
+const digitsOf = (value) => String(value ?? '').replace(/\D/g, '');
 const NOBODY_AVAILABLE =
   'Thank you for calling. Nobody is available right now. We will call you back shortly.';
 const announce = () => emitToAll(SOCKET_EVENTS.callsChanged);
@@ -73,8 +86,30 @@ async function readSettings() {
     announcementEnabled: settings?.calls?.announcementEnabled ?? true,
     consentText: settings?.calls?.consentText || DEFAULT_CONSENT,
     defaultInboundUserId: settings?.calls?.defaultInboundUserId ?? null,
+    browserCallingEnabled: settings?.calls?.browserCallingEnabled ?? true,
+    ringtoneUrl: settings?.calls?.ringtoneUrl ?? null,
   };
 }
+
+/** May browsers take part in calls right now (set up on the server, and switched on)? */
+const browsersOn = (settings) => isBrowserCallingConfigured() && settings.browserCallingEnabled;
+
+/**
+ * Where a person can be rung: their phone and/or their browser (when they have used calling in
+ * the browser, and it is on). Both ring together.
+ * @returns {Promise<{ phone: string | null, browser: string | null }>}
+ */
+async function ringTargetsOf(userId, settings) {
+  if (!userId) return { phone: null, browser: null };
+  const user = await User.findOne({ _id: userId, status: 'active' })
+    .select('phone plivoEndpoint')
+    .lean();
+  return {
+    phone: normalizePhone(user?.phone),
+    browser: browsersOn(settings) ? (user?.plivoEndpoint?.username ?? null) : null,
+  };
+}
+const canBeRung = (targets) => Boolean(targets.phone || targets.browser);
 
 /** A user's own phone in the international form; null when they have none (or it is not one). */
 async function phoneOfUser(userId) {
@@ -98,6 +133,18 @@ export async function getCallSettings() {
     defaultInboundUserId: settings.defaultInboundUserId
       ? String(settings.defaultInboundUserId)
       : null,
+    browserCallingEnabled: settings.browserCallingEnabled,
+    // Our own ringtone for the browser, to listen to; null: Plivo's.
+    ringtone: settings.ringtoneUrl
+      ? {
+          url: await toReadableUrl(settings.ringtoneUrl),
+          name: settings.ringtoneUrl.split('/').pop(),
+        }
+      : null,
+    browser: {
+      isConfigured: isBrowserCallingConfigured(),
+      missing: [...missingPlivoSettings(), ...(env.PLIVO_APP_ID ? [] : ['PLIVO_APP_ID'])],
+    },
     // Recordings are kept in file storage: without it a recorded call is not saved.
     canStoreRecordings: isStorageConfigured(),
     setup: {
@@ -118,7 +165,9 @@ export async function getCallSettings() {
 
 /**
  * @param {{ recordingEnabled?: boolean, consentText?: string,
- *           defaultInboundUserId?: string | null }} changes  Already validated
+ *           defaultInboundUserId?: string | null, browserCallingEnabled?: boolean,
+ *           ringtoneUrl?: string | null }} changes  Already validated (the ringtone comes from
+ *        saveRingtone / removeRingtone)
  */
 export async function updateCallSettings(actor, changes, context = {}) {
   if (changes.defaultInboundUserId && !(await phoneOfUser(changes.defaultInboundUserId))) {
@@ -220,10 +269,11 @@ async function toViews(calls, actor) {
 // ── Click-to-call ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Call a contact: ring the acting person's own phone, then join the contact.
- * @param {{ contactId: string, opportunityId?: string }} data  Already validated
+ * Who may be called: a contact the person reaches through a lead or a company they may see,
+ * who did not ask not to be called, and who has a number.
+ * @returns {Promise<{ contact: object, customerPhone: string }>}
  */
-export async function startCall(actor, { contactId, opportunityId }, context = {}) {
+async function callTarget(actor, { contactId, opportunityId }) {
   if (!isPlivoConfigured()) {
     throw createAppError('PLIVO_NOT_CONFIGURED', 503, 'Calling is not set up yet.');
   }
@@ -243,6 +293,15 @@ export async function startCall(actor, { contactId, opportunityId }, context = {
   }
   const customerPhone = contact.phone_number ?? contact.alt_phone_number;
   if (!customerPhone) throw badRequest(`${contact.name} has no phone number.`);
+  return { contact, customerPhone };
+}
+
+/**
+ * Call a contact: ring the acting person's own phone, then join the contact.
+ * @param {{ contactId: string, opportunityId?: string }} data  Already validated
+ */
+export async function startCall(actor, { contactId, opportunityId }, context = {}) {
+  const { contact, customerPhone } = await callTarget(actor, { contactId, opportunityId });
   const myPhone = await phoneOfUser(actor._id);
   if (!myPhone) {
     throw badRequest(
@@ -252,6 +311,7 @@ export async function startCall(actor, { contactId, opportunityId }, context = {
 
   const call = await Call.create({
     direction: 'outbound',
+    via: 'phone',
     fromNumber: ourNumber(),
     toNumber: customerPhone,
     status: 'initiated',
@@ -285,6 +345,115 @@ export async function startCall(actor, { contactId, opportunityId }, context = {
   });
   announce();
   return (await toViews([await Call.findById(call._id).lean()], actor))[0];
+}
+
+// ── Calls inside the CRM (the browser; docs/planning/browser-calling.md) ────────────────────
+
+/**
+ * What a person's browser needs to take part in calls: whether it is on, and a sign-in for
+ * their own Plivo endpoint (made the first time). The token is never logged or stored.
+ * @returns {Promise<{ isAvailable: false } | { isAvailable: true, token: string,
+ *           expiresAt: Date, ringtoneUrl: string | null }>}
+ */
+export async function getBrowserPhone(actor) {
+  const settings = await readSettings();
+  if (!browsersOn(settings)) return { isAvailable: false };
+  let endpoint = (await User.findById(actor._id).select('plivoEndpoint').lean())?.plivoEndpoint;
+  if (!endpoint?.username) {
+    const made = await createEndpoint({
+      name: `crm${String(actor._id).slice(-8)}`,
+      alias: `crm-${actor._id}`,
+    });
+    // Two tabs asking at the same moment: the first one kept wins.
+    const kept = await User.findOneAndUpdate(
+      { _id: actor._id, 'plivoEndpoint.username': null },
+      { $set: { plivoEndpoint: made } },
+      { returnDocument: 'after' },
+    )
+      .select('plivoEndpoint')
+      .lean();
+    endpoint =
+      kept?.plivoEndpoint ??
+      (await User.findById(actor._id).select('plivoEndpoint').lean()).plivoEndpoint;
+  }
+  const { token, expiresAt } = await createAccessToken({
+    username: endpoint.username,
+    validSec: BROWSER_TOKEN_SEC,
+  });
+  return {
+    isAvailable: true,
+    token,
+    expiresAt,
+    ringtoneUrl: settings.ringtoneUrl ? await toReadableUrl(settings.ringtoneUrl) : null,
+  };
+}
+
+/**
+ * Call a contact from the browser. The call is written first, with the same checks as a call
+ * from the phone; the browser then asks Plivo, and Plivo asks us (answerFromBrowser), which
+ * dials only the number written here.
+ * @param {{ contactId: string, opportunityId?: string }} data  Already validated
+ * @returns {Promise<{ callId: string, to: string, call: object }>}
+ */
+export async function startBrowserCall(actor, { contactId, opportunityId }, context = {}) {
+  if (!browsersOn(await readSettings())) {
+    throw conflict('Calls in the browser are switched off. Use your phone.');
+  }
+  const { contact, customerPhone } = await callTarget(actor, { contactId, opportunityId });
+  const me = await User.findById(actor._id).select('plivoEndpoint').lean();
+  if (!me?.plivoEndpoint?.username) {
+    throw conflict('Calling in the browser is not ready yet. Reload the page and try again.');
+  }
+  const call = await Call.create({
+    direction: 'outbound',
+    via: 'browser',
+    fromNumber: ourNumber(),
+    toNumber: customerPhone,
+    status: 'initiated',
+    startedAt: new Date(),
+    userId: actor._id,
+    contactId: contact._id,
+    accountId: contact.accountId,
+    opportunityId: opportunityId ?? undefined,
+  });
+  await writeAudit({
+    actor,
+    action: 'call.started',
+    entityType: 'calls',
+    entityId: call._id,
+    newValue: { contactId: String(contact._id), direction: 'outbound', via: 'browser' },
+    requestId: context.requestId,
+  });
+  announce();
+  return {
+    callId: String(call._id),
+    to: customerPhone,
+    call: (await toViews([call.toObject()], actor))[0],
+  };
+}
+
+/** Settings → Calls: our own ringtone for calls coming into the browser. */
+export async function saveRingtone(actor, file, context = {}) {
+  if (!RINGTONE_TYPES.includes(file.mimetype)) {
+    throw badRequest('Choose a sound file: MP3, WAV or OGG.');
+  }
+  if (file.size > RINGTONE_MAX_BYTES) throw badRequest('The sound file may be at most 1 MB.');
+  if (!isStorageConfigured())
+    throw conflict('File storage is not set up, so a ringtone cannot be kept.');
+  const name = String(file.originalname ?? 'ringtone')
+    .replace(/[^a-zA-Z0-9._-]+/g, '-')
+    .slice(-60);
+  const url = await uploadObject({
+    key: `ringtones/${Date.now()}-${name}`,
+    body: file.buffer,
+    contentType: file.mimetype,
+  });
+  return updateCallSettings(actor, { ringtoneUrl: url }, context);
+}
+
+/** Back to Plivo's ringtone. */
+export async function removeRingtone(actor, context = {}) {
+  return updateCallSettings(actor, { ringtoneUrl: null }, context);
 }
 
 /**
@@ -407,7 +576,11 @@ export async function getCallDetail(actor, callId) {
       // Click-to-call: our number rings our own person. Inbound: the customer rings our number.
       from: isOutbound ? us : call.fromNumber,
       to: isOutbound ? (hangup?.To ? `+${String(hangup.To).replace(/\D/g, '')}` : null) : us,
-      who: isOutbound ? 'Our person’s phone' : 'The customer',
+      who: isOutbound
+        ? call.via === 'browser'
+          ? 'Our person, in the CRM'
+          : 'Our person’s phone'
+        : 'The customer',
       durationSec: aLeg?.durationSec ?? (Number(hangup?.Duration) || null),
       costInr: inr(aLeg?.cost ?? hangup?.TotalCost),
       hangupCause: aLeg?.hangupCause ?? hangup?.HangupCauseName ?? hangup?.HangupCause ?? null,
@@ -657,7 +830,7 @@ async function matchCaller(fromNumber) {
     ? await Account.findById(contact.accountId).select('ownerId').lean()
     : null;
   const settings = await readSettings();
-  // The first of these people who has a phone takes the call.
+  // The first of these people who can be rung (phone or browser) takes the call.
   const candidates = [
     lead?.ownerId,
     contact?.ownerId,
@@ -665,27 +838,89 @@ async function matchCaller(fromNumber) {
     settings.defaultInboundUserId,
   ];
   for (const userId of candidates) {
-    const phone = await phoneOfUser(userId);
-    if (phone) {
-      const fallbackUserId = await fallbackFor(userId, settings.defaultInboundUserId);
-      return { contact, lead, userId, phone, fallbackUserId };
+    const targets = await ringTargetsOf(userId, settings);
+    if (canBeRung(targets)) {
+      const fallbackUserId = await fallbackFor(userId, settings);
+      return { contact, lead, userId, targets, fallbackUserId };
     }
   }
-  return { contact, lead, userId: candidates.find(Boolean) ?? null, phone: null };
+  return {
+    contact,
+    lead,
+    userId: candidates.find(Boolean) ?? null,
+    targets: { phone: null, browser: null },
+  };
 }
 
 /**
  * Who is rung when the first person does not pick up: the default person from Settings → Calls,
  * else the first person's manager. Someone else than the first person, with a phone; else nobody.
  */
-async function fallbackFor(firstUserId, defaultUserId) {
+async function fallbackFor(firstUserId, settings) {
   const first = await User.findById(firstUserId).select('managerId').lean();
-  for (const userId of [defaultUserId, first?.managerId]) {
-    if (userId && String(userId) !== String(firstUserId) && (await phoneOfUser(userId))) {
+  for (const userId of [settings.defaultInboundUserId, first?.managerId]) {
+    if (
+      userId &&
+      String(userId) !== String(firstUserId) &&
+      canBeRung(await ringTargetsOf(userId, settings))
+    ) {
       return userId;
     }
   }
   return null;
+}
+
+/** The "dial" answer that rings one person's phone and browser together. */
+async function ringXml(call, targets, step, timeoutSec) {
+  return dialXml({
+    number: targets.phone ?? undefined,
+    browsers: targets.browser ? [{ username: targets.browser, callId: String(call._id) }] : [],
+    ...(timeoutSec ? { timeoutSec } : {}),
+    resultUrl: plivoUrl('dial-result', { call: call._id, step }),
+    ...(await recordingOptions(call._id)),
+  });
+}
+
+/**
+ * A call that a browser started (Plivo asks the same address as for a customer's call, from
+ * sip:<endpoint>). Only a call the CRM wrote a moment ago for that same person and that same
+ * number is dialled (startBrowserCall); anything else is ended at once.
+ */
+async function answerFromBrowser(params, username) {
+  const callId = Object.entries(params).find(([key]) => key.toLowerCase() === 'x-ph-callid')?.[1];
+  const call = mongooseId(callId) ? await Call.findById(callId).lean() : null;
+  const owner = call?.userId
+    ? await User.findOne({ _id: call.userId, status: 'active' }).select('plivoEndpoint').lean()
+    : null;
+  const isAllowed =
+    call &&
+    call.via === 'browser' &&
+    call.status === 'initiated' &&
+    Date.now() - new Date(call.createdAt).getTime() < BROWSER_START_MS &&
+    owner?.plivoEndpoint?.username === username &&
+    digitsOf(params.To).endsWith(digitsOf(call.toNumber).slice(-10));
+  if (!isAllowed) {
+    logger.warn({ callId: callId ? String(callId) : null }, 'A browser call was refused');
+    return emptyXml();
+  }
+  // Claimed once: Plivo asking twice does not dial twice.
+  const claimed = await Call.findOneAndUpdate(
+    { _id: call._id, status: 'initiated' },
+    {
+      $set: {
+        status: 'in_progress',
+        answeredAt: new Date(),
+        plivoCallUuid: String(params.CallUUID ?? ''),
+      },
+    },
+  ).lean();
+  if (!claimed) return emptyXml();
+  announce();
+  return dialXml({
+    number: call.toNumber,
+    resultUrl: plivoUrl('dial-result', { call: call._id }),
+    ...(await recordingOptions(call._id)),
+  });
 }
 
 /**
@@ -695,8 +930,11 @@ async function fallbackFor(firstUserId, defaultUserId) {
  */
 export async function answerInbound(params) {
   if (!params.CallUUID) return speakXml(NOBODY_AVAILABLE);
+  // A call started in one of our browsers, not a customer calling.
+  const endpoint = endpointOfCaller(params.From);
+  if (endpoint) return answerFromBrowser(params, endpoint);
   const fromNumber = normalizePhone(`+${String(params.From ?? '').replace(/\D/g, '')}`);
-  const { contact, lead, userId, phone, fallbackUserId } = await matchCaller(fromNumber);
+  const { contact, lead, userId, targets, fallbackUserId } = await matchCaller(fromNumber);
 
   // Plivo may ask twice (a retry): the same call is written once.
   const call = await Call.findOneAndUpdate(
@@ -718,21 +956,17 @@ export async function answerInbound(params) {
     { upsert: true, returnDocument: 'after' },
   ).lean();
   announce();
-  if (!phone) return speakXml(NOBODY_AVAILABLE);
-  return dialXml({
-    number: phone,
-    // With someone to try next, the first phone rings a shorter time.
-    ...(call.fallbackUserId ? { timeoutSec: FIRST_RING_SEC } : {}),
-    resultUrl: plivoUrl('dial-result', { call: call._id, step: 1 }),
-    ...(await recordingOptions(call._id)),
-  });
+  if (!canBeRung(targets)) return speakXml(NOBODY_AVAILABLE);
+  // With someone to try next, the first person rings a shorter time.
+  return ringXml(call, targets, 1, call.fallbackUserId ? FIRST_RING_SEC : undefined);
 }
 
-/** Inbound, first ring over and nobody talked: the phone of the next person, or null. */
+/** Inbound, first ring over and nobody talked: where to ring the next person, or null. */
 async function nextPhone(call, step, params) {
   if (call?.direction !== 'inbound' || String(step) !== '1') return null;
   if (params.DialStatus === 'completed' || !call.fallbackUserId) return null;
-  return phoneOfUser(call.fallbackUserId);
+  const targets = await ringTargetsOf(call.fallbackUserId, await readSettings());
+  return canBeRung(targets) ? targets : null;
 }
 
 /**
@@ -742,14 +976,9 @@ async function nextPhone(call, step, params) {
  */
 export async function answerDialResult(callId, step, params) {
   const call = mongooseId(callId) ? await Call.findById(callId).lean() : null;
-  const phone = await nextPhone(call, step, params);
-  if (!phone) return emptyXml();
-  return dialXml({
-    number: phone,
-    timeoutSec: SECOND_RING_SEC,
-    resultUrl: plivoUrl('dial-result', { call: call._id, step: 2 }),
-    ...(await recordingOptions(call._id)),
-  });
+  const targets = await nextPhone(call, step, params);
+  if (!targets) return emptyXml();
+  return ringXml(call, targets, 2, SECOND_RING_SEC);
 }
 
 /** The "this call may be recorded" announcement. */
@@ -805,7 +1034,14 @@ function resultOf(call) {
   if (call.direction === 'inbound')
     return { ...base, status: 'missed', hangupCause: dial?.DialStatus };
   // Outbound: the agent's own phone has to pick up first.
-  if (!dial) return { ...base, status: 'no_answer', hangupCause: 'agent_did_not_pick_up' };
+  if (!dial) {
+    return {
+      ...base,
+      status: 'no_answer',
+      // From the browser: our person ended it before the customer was dialled.
+      hangupCause: call.via === 'browser' ? 'ended_before_dialling' : 'agent_did_not_pick_up',
+    };
+  }
   const status = { busy: 'busy', 'no-answer': 'no_answer', timeout: 'no_answer' }[dial.DialStatus];
   return { ...base, status: status ?? 'failed', hangupCause: dial.DialStatus };
 }

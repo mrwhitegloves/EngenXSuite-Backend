@@ -40,6 +40,10 @@ const settingsSchema = new mongoose.Schema(
       },
       // Who gets an inbound call from a number nobody knows, or whose owner has no phone.
       defaultInboundUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      // Calls inside the CRM (the browser), as well as on people's phones. On by default.
+      browserCallingEnabled: { type: Boolean, default: true },
+      // Our own ringtone for calls coming into the browser (an S3 address); empty: Plivo's.
+      ringtoneUrl: { type: String },
     },
     ai: {
       // The most the AI may cost in one month, in paise. Reached: AI features pause.
