@@ -2,9 +2,12 @@ import { isValidVerifyToken } from '../integrations/meta/leadAds.js';
 import { forbidden } from '../lib/errors.js';
 import { sendList, sendOk } from '../lib/respond.js';
 import {
+  connectMetaPage,
+  getMetaPage,
   listInboundLeads,
   listLeadForms,
   retryInboundLead,
+  syncMetaForms,
   updateLeadForm,
 } from '../services/inboundLeads.service.js';
 import { getLeadAssignment, updateLeadAssignment } from '../services/leadAssignment.service.js';
@@ -40,6 +43,21 @@ export async function patchAssignment(req, res) {
 // GET /api/lead-forms: the forms with their mapping, and whether Meta is set up.
 export async function getLeadForms(req, res) {
   sendOk(res, await listLeadForms());
+}
+
+// GET /api/lead-forms/meta/page: the Page behind the token, and whether its leads come here.
+export async function getMetaPageStatus(req, res) {
+  sendOk(res, await getMetaPage());
+}
+
+// POST /api/lead-forms/meta/page/connect: once, send the Page's new leads to our app.
+export async function postConnectMetaPage(req, res) {
+  sendOk(res, await connectMetaPage(req.user, context(req)));
+}
+
+// POST /api/lead-forms/meta/forms/sync: bring in the Page's lead forms and their questions.
+export async function postSyncMetaForms(req, res) {
+  sendOk(res, await syncMetaForms(req.user, context(req)));
 }
 
 // PATCH /api/lead-forms/:id

@@ -5,7 +5,11 @@ import { emitToAll } from '../infra/realtime.js';
 import {
   fetchMetaFormName,
   fetchMetaLead,
+  fetchMetaPage,
+  fetchPageForms,
+  fetchPageSubscriptions,
   isMetaLeadsConfigured,
+  subscribePageToLeads,
 } from '../integrations/meta/leadAds.js';
 import { writeAudit } from '../lib/audit.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
@@ -17,6 +21,7 @@ import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { InboundLead, LEAD_FORM_FIELDS, LeadForm } from '../models/inboundLead.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
+import { Settings } from '../models/settings.model.js';
 import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { User } from '../models/user.model.js';
 import { createAccountBody } from '../validation/accounts.js';
@@ -522,6 +527,91 @@ function toFormView(form, names) {
     defaultOwner: named(names.users, form.defaultOwnerId),
     defaultSolutionCategory: named(names.categories, form.defaultSolutionCategoryId),
   };
+}
+
+/**
+ * The Page behind the token, and whether its new leads come to the CRM (the one-time
+ * connection, docs/META_LEADS.md). Meta's own words when something is wrong.
+ */
+export async function getMetaPage() {
+  if (!isMetaLeadsConfigured()) return { isConfigured: false, page: null };
+  try {
+    const page = await fetchMetaPage();
+    const apps = await fetchPageSubscriptions(page.id);
+    return {
+      isConfigured: true,
+      page,
+      // Some app of ours gets the Page's new leads.
+      isSubscribed: apps.some((app) => app.fields.includes('leadgen')),
+      apps: apps.map((app) => ({ name: app.name, getsLeads: app.fields.includes('leadgen') })),
+      problem: null,
+    };
+  } catch (error) {
+    return {
+      isConfigured: true,
+      page: null,
+      isSubscribed: false,
+      apps: [],
+      problem: error.message,
+    };
+  }
+}
+
+/** Once: tell Meta to send the Page's new leads to our app. */
+export async function connectMetaPage(actor, context = {}) {
+  if (!isMetaLeadsConfigured()) throw conflict('Meta lead ads are not set up on the server yet.');
+  const page = await fetchMetaPage();
+  if (!(await subscribePageToLeads(page.id))) {
+    throw conflict('Meta did not confirm the connection. Try again in a minute.');
+  }
+  const settings = await getSettingsId();
+  await writeAudit({
+    actor,
+    action: 'meta.page_connected',
+    entityType: 'settings',
+    entityId: settings,
+    newValue: { pageId: page.id, pageName: page.name },
+    requestId: context.requestId,
+  });
+  return getMetaPage();
+}
+
+/**
+ * Bring in every lead form of the Page with its questions, so its mapping and owner can be set
+ * before the first lead arrives. Nothing of a form already there is changed but its name and
+ * its list of questions.
+ */
+export async function syncMetaForms(actor, context = {}) {
+  if (!isMetaLeadsConfigured()) throw conflict('Meta lead ads are not set up on the server yet.');
+  const page = await fetchMetaPage();
+  const forms = await fetchPageForms(page.id);
+  let added = 0;
+  for (const form of forms) {
+    const before = await LeadForm.findOneAndUpdate(
+      { source: SOURCE, externalFormId: form.id },
+      {
+        $set: { name: form.name, pageId: page.id },
+        $addToSet: { questions: { $each: form.questions } },
+      },
+      { upsert: true },
+    ).lean();
+    if (!before) added += 1;
+  }
+  const settings = await getSettingsId();
+  await writeAudit({
+    actor,
+    action: 'meta.forms_synced',
+    entityType: 'settings',
+    entityId: settings,
+    newValue: { pageId: page.id, forms: forms.length, added },
+    requestId: context.requestId,
+  });
+  return { found: forms.length, added, ...(await listLeadForms()) };
+}
+
+/** The id of the settings document, for the audit log. */
+async function getSettingsId() {
+  return (await Settings.findOne({ key: 'app' }).select('_id').lean())?._id ?? null;
 }
 
 export async function listLeadForms() {

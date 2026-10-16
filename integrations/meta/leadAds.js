@@ -3,7 +3,8 @@ import { env } from '../../config/env.js';
 import { createAppError } from '../../lib/errors.js';
 
 // The only file that talks to Meta about lead ads: checking that a webhook really comes from
-// Meta, and asking Meta for the answers of a lead.
+// Meta, asking Meta for the answers of a lead, and the one-time connection of the Page (which
+// Page the token belongs to, subscribing that Page's leads to our app, and its lead forms).
 //
 // A lead webhook carries only ids ("lead 123 was created on form 456"); the answers are fetched
 // with the Page access token. Setup and troubleshooting: docs/META_LEADS.md.
@@ -35,17 +36,30 @@ export function isValidMetaSignature(rawBody, header) {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
-async function graphGet(path, fields) {
+async function graphGet(path, fields, query = {}) {
+  return graphRequest('GET', path, { fields, ...query });
+}
+
+async function graphRequest(method, path, params = {}) {
   if (!env.META_PAGE_ACCESS_TOKEN) {
     throw createAppError('META_NOT_CONFIGURED', 503, 'The Meta page access token is not set.');
   }
   const url = new URL(`${GRAPH_URL}/${env.META_GRAPH_VERSION}/${path}`);
-  url.searchParams.set('fields', fields);
+  const form = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (method === 'GET') url.searchParams.set(key, String(value));
+    else form.set(key, String(value));
+  }
   let response;
   try {
     response = await fetch(url, {
+      method,
       // The token goes in a header, never in the address (addresses end up in logs).
-      headers: { Authorization: `Bearer ${env.META_PAGE_ACCESS_TOKEN}` },
+      headers: {
+        Authorization: `Bearer ${env.META_PAGE_ACCESS_TOKEN}`,
+        ...(method === 'GET' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }),
+      },
+      ...(method === 'GET' ? {} : { body: form.toString() }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
   } catch {
@@ -99,4 +113,56 @@ export async function fetchMetaFormName(formId) {
   } catch {
     return null;
   }
+}
+
+// ── The one-time connection of the Page ──────────────────────────────────────────────────────
+
+/** The Page the token belongs to (a Page token answers "me" with the Page). */
+export async function fetchMetaPage() {
+  const page = await graphGet('me', 'id,name');
+  return { id: String(page.id), name: page.name ?? null };
+}
+
+/**
+ * The apps that receive this Page's webhooks, with their fields. Ours must have "leadgen".
+ * @returns {Promise<{ id: string, name: string | null, fields: string[] }[]>}
+ */
+export async function fetchPageSubscriptions(pageId) {
+  const body = await graphGet(
+    `${encodeURIComponent(pageId)}/subscribed_apps`,
+    'id,name,subscribed_fields',
+  );
+  return (body.data ?? []).map((app) => ({
+    id: String(app.id),
+    name: app.name ?? null,
+    fields: (app.subscribed_fields ?? []).map(String),
+  }));
+}
+
+/** Tell Meta to send this Page's new leads to our app (the app of the token). */
+export async function subscribePageToLeads(pageId) {
+  const body = await graphRequest('POST', `${encodeURIComponent(pageId)}/subscribed_apps`, {
+    subscribed_fields: 'leadgen',
+  });
+  return body?.success === true;
+}
+
+/**
+ * The lead forms of the Page, with the names of their questions.
+ * @returns {Promise<{ id: string, name: string, status: string | null, questions: string[] }[]>}
+ */
+export async function fetchPageForms(pageId) {
+  const body = await graphGet(
+    `${encodeURIComponent(pageId)}/leadgen_forms`,
+    'id,name,status,questions',
+    {
+      limit: 100,
+    },
+  );
+  return (body.data ?? []).map((form) => ({
+    id: String(form.id),
+    name: String(form.name ?? `Form ${form.id}`).slice(0, 200),
+    status: form.status ?? null,
+    questions: (form.questions ?? []).map((question) => String(question.key ?? '')).filter(Boolean),
+  }));
 }

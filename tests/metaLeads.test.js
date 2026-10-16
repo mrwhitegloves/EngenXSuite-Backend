@@ -39,12 +39,43 @@ let agents;
 const metaLeads = new Map();
 let metaIsDown = false;
 const graphCalls = [];
+// The Page behind the token: which apps get its leads, and its lead forms.
+const metaPage = { subscribedFields: [], subscribeCalls: [] };
 function fakeGraph(url, options) {
   const { pathname } = new URL(url);
   const id = pathname.split('/').pop();
   graphCalls.push({ id, authorization: options?.headers?.Authorization, url: String(url) });
   const answer = (status, body) => ({ ok: status === 200, status, json: async () => body });
   if (metaIsDown) return answer(400, { error: { message: 'Error validating access token' } });
+  if (pathname.endsWith('/me')) return answer(200, { id: '900200', name: 'EngenX' });
+  if (pathname.endsWith('/900200/subscribed_apps')) {
+    if (options?.method === 'POST') {
+      metaPage.subscribeCalls.push(String(options.body));
+      metaPage.subscribedFields = ['leadgen'];
+      return answer(200, { success: true });
+    }
+    return answer(200, {
+      data: [{ id: 'app-1', name: 'EngenX CRM', subscribed_fields: metaPage.subscribedFields }],
+    });
+  }
+  if (pathname.endsWith('/900200/leadgen_forms')) {
+    return answer(200, {
+      data: [
+        {
+          id: FORM_ID,
+          name: 'Factory OEE enquiry',
+          status: 'ACTIVE',
+          questions: [{ key: 'full_name' }, { key: 'phone_number' }, { key: 'plant_size' }],
+        },
+        {
+          id: '700300',
+          name: 'Brochure download',
+          status: 'ACTIVE',
+          questions: [{ key: 'email' }],
+        },
+      ],
+    });
+  }
   if (id === FORM_ID) return answer(200, { id, name: 'Factory OEE enquiry' });
   if (metaLeads.has(id)) return answer(200, metaLeads.get(id));
   return answer(404, { error: { message: 'Unsupported get request' } });
@@ -535,5 +566,55 @@ describe('lead forms and failed leads', () => {
     expect((await asCeo.post(`/api/inbound-leads/${failed[0].id}/retry`)).status).toBe(409);
     const all = (await asCeo.get('/api/inbound-leads')).body.data;
     expect(all[0]).toMatchObject({ status: 'processed', name: 'Ravi Kumar', error: null });
+  });
+});
+
+describe('the one-time connection of the Facebook Page', () => {
+  it('shows the Page, connects its leads to the CRM, and brings in its forms', async () => {
+    metaPage.subscribedFields = [];
+    metaPage.subscribeCalls.length = 0;
+    const status = (await asCeo.get('/api/lead-forms/meta/page')).body.data;
+    expect(status).toEqual({
+      isConfigured: true,
+      page: { id: '900200', name: 'EngenX' },
+      isSubscribed: false,
+      apps: [{ name: 'EngenX CRM', getsLeads: false }],
+      problem: null,
+    });
+    // The token is sent in a header, never in the address.
+    const call = graphCalls.find((item) => item.id === 'me');
+    expect(call.authorization).toBe('Bearer test-page-token');
+    expect(call.url).not.toContain('test-page-token');
+
+    // Only someone who manages the settings connects it.
+    expect((await asAgent.post('/api/lead-forms/meta/page/connect')).status).toBe(403);
+    const connected = await asCeo.post('/api/lead-forms/meta/page/connect');
+    expect(connected.body.data).toMatchObject({ isSubscribed: true });
+    expect(metaPage.subscribeCalls).toEqual(['subscribed_fields=leadgen']);
+
+    // The forms come in with their questions, once, before any lead.
+    const synced = await asCeo.post('/api/lead-forms/meta/forms/sync');
+    expect(synced.body.data).toMatchObject({ found: 2, added: 2 });
+    expect(synced.body.data.forms.map((form) => form.name)).toEqual([
+      'Brochure download',
+      'Factory OEE enquiry',
+    ]);
+    const oee = synced.body.data.forms.find((form) => form.name === 'Factory OEE enquiry');
+    expect(oee.questions.map((item) => item.question)).toEqual([
+      'full_name',
+      'phone_number',
+      'plant_size',
+    ]);
+    expect((await asCeo.post('/api/lead-forms/meta/forms/sync')).body.data.added).toBe(0);
+    const { AuditLog } = await import('../models/auditLog.model.js');
+    expect(
+      (await AuditLog.find({ action: /^meta\./ }).lean()).map((entry) => entry.action).sort(),
+    ).toEqual(['meta.forms_synced', 'meta.forms_synced', 'meta.page_connected']);
+
+    // Meta refuses (an expired token): said in Meta's words, nothing breaks.
+    metaIsDown = true;
+    const down = (await asCeo.get('/api/lead-forms/meta/page')).body.data;
+    expect(down.problem).toContain('Error validating access token');
+    metaIsDown = false;
   });
 });
