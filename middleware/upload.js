@@ -2,7 +2,7 @@ import multer from 'multer';
 import { badRequest } from '../lib/errors.js';
 
 // File uploads arrive as multipart form data. The file is kept in memory only for the length of
-// the request (Cloud Run has no permanent disk) and goes straight to S3 from there.
+// the request (the container keeps nothing on disk) and goes straight to S3 from there.
 
 const MB = 1024 * 1024;
 export const MAX_AVATAR_BYTES = 2 * MB;

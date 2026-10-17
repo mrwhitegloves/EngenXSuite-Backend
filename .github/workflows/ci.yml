@@ -39,10 +39,10 @@ jobs:
       - name: Scan for committed secrets
         run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:latest detect --source /repo --redact --no-banner
 
-  # Deploys to Google Cloud Run, only after every check above passed, and only for a push to
-  # main. GitHub signs in to Google without a stored key (Workload Identity Federation); the two
-  # repository variables below are set once (docs/runbooks/deploy.md, section C). Without them
-  # this job is skipped. Settings and secrets of the service are kept from the last deploy.
+  # Deploys to the Compute Engine VM, only after every check above passed, and only for a push
+  # to main. GitHub signs in to Google without a stored key (Workload Identity Federation); the
+  # two repository variables below are set once (docs/runbooks/deploy.md, section C). Without
+  # them this job is skipped. The settings and secrets live in the VM's env file, not here.
   deploy:
     needs: check
     if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.GCP_WORKLOAD_IDENTITY_PROVIDER != ''
@@ -57,8 +57,10 @@ jobs:
       cancel-in-progress: false
     env:
       PROJECT: mr-white-gloves-production
-      REGION: asia-south1
-      SERVICE: engenx-crm
+      ZONE: asia-south1-a
+      VM: mwg-apps-vm
+      APP: engenx-crm
+      HEALTH_URL: https://crm-api.engenx.in/api/health
     steps:
       - uses: actions/checkout@v4
 
@@ -69,12 +71,13 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v2
 
+      # The server runs in Docker on the Compute Engine VM (decision 0015). deploy.sh on the VM
+      # pulls this commit, builds the image, starts it and puts the previous image back when the
+      # new one does not answer its health check. The connection goes through IAP (no open SSH).
       - name: Deploy
-        run: gcloud run deploy "$SERVICE" --source . --project "$PROJECT" --region "$REGION" --quiet
-
-      # A new version that does not start is not given traffic by Cloud Run; this also checks
-      # that the version now serving answers with its database, Redis and storage up.
-      - name: Health check
         run: |
-          url="$(gcloud run services describe "$SERVICE" --project "$PROJECT" --region "$REGION" --format 'value(status.url)')"
-          curl --fail --silent --show-error --retry 5 --retry-delay 5 "$url/api/health"
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet             --command "sudo /opt/apps/bin/deploy.sh $APP $GITHUB_SHA"
+
+      # Checks from outside that the version now serving answers with its database up.
+      - name: Health check
+        run: curl --fail --silent --show-error --retry 5 --retry-delay 5 --retry-all-errors "$HEALTH_URL"

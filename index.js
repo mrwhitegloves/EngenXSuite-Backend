@@ -48,7 +48,7 @@ async function start() {
     logger.error({ err: error }, 'Interrupted imports could not be looked up'),
   );
 
-  // Cloud Run sends SIGTERM before stopping an instance. Stop taking new requests,
+  // Docker sends SIGTERM before stopping the container. Stop taking new requests,
   // let running ones finish, then close the database connection.
   async function shutdown(signal) {
     logger.info({ signal }, 'Shutting down');

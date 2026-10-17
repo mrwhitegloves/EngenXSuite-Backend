@@ -25,7 +25,8 @@ export function createApp({ sessionMiddleware } = {}) {
   // Proxies in front of the app add the visitor's address to a header. Trusting exactly the
   // right number of them makes req.ip the real visitor, which the rate limiter depends on:
   // too few and everyone shares one address, too many and a visitor can fake theirs.
-  // Cloud Run is 1; requests that also pass through the client's host are 2 (TRUST_PROXY_HOPS).
+  // Caddy on the VM is 1; requests that also pass through the client's host (Vercel) are 2
+  // (TRUST_PROXY_HOPS).
   app.set('trust proxy', env.TRUST_PROXY_HOPS);
   app.disable('x-powered-by');
 
