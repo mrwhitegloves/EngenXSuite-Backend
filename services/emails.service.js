@@ -4,6 +4,7 @@ import { sendMessage } from '../integrations/google/gmail.js';
 import { logger } from '../infra/logger.js';
 import { enqueue } from '../infra/queues.js';
 import { writeAudit } from '../lib/audit.js';
+import { cleanMailHtml } from '../lib/mailHtml.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { keyFromUrl, readObject } from '../infra/storage.js';
 import { runListQuery } from '../lib/queryBuilder.js';
@@ -382,6 +383,8 @@ export async function sendEmail(actor, mail, context = {}) {
     cc: mail.cc,
     subject,
     text: mail.text,
+    // The laid-out form, cleaned once more on the server (lib/mailHtml.js).
+    html: cleanMailHtml(mail.html),
     threadId: thread?.gmailThreadId,
     inReplyTo: answered?.messageIdHeader,
     references: answered?.references,
