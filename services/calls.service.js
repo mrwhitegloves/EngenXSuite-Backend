@@ -931,8 +931,10 @@ async function answerFromBrowser(params, username) {
 export async function answerInbound(params) {
   if (!params.CallUUID) return speakXml(NOBODY_AVAILABLE);
   // A call started in one of our browsers, not a customer calling.
+  // (Our browsers also send the header X-PH-CallId, which no customer's phone sends.)
   const endpoint = endpointOfCaller(params.From);
-  if (endpoint) return answerFromBrowser(params, endpoint);
+  const fromBrowser = Object.keys(params).some((key) => key.toLowerCase() === 'x-ph-callid');
+  if (endpoint || fromBrowser) return answerFromBrowser(params, endpoint);
   const fromNumber = normalizePhone(`+${String(params.From ?? '').replace(/\D/g, '')}`);
   const { contact, lead, userId, targets, fallbackUserId } = await matchCaller(fromNumber);
 
@@ -1173,6 +1175,16 @@ export async function settleCall(callId) {
  * @param {Date} [now]  Only tests pass it
  */
 export async function settleWaitingCalls(now = new Date()) {
+  // A call written for a browser that never reached Plivo (the browser was closed, the
+  // microphone refused, the line dropped) would stay "starting" for ever: it did not happen.
+  await Call.updateMany(
+    {
+      via: 'browser',
+      status: 'initiated',
+      createdAt: { $lt: new Date(now.getTime() - 10 * 60 * 1000) },
+    },
+    { $set: { status: 'failed', endedAt: now, hangupCause: 'never_reached_plivo' } },
+  );
   const waiting = await Call.find({
     endedAt: {
       $gt: new Date(now.getTime() - 14 * 24 * 60 * 60 * 1000),
