@@ -133,9 +133,13 @@ export function isValidPlivoSignature(req) {
 /** The SIP address of a browser endpoint. */
 export const endpointSipUri = (username) => `sip:${username}@phone.plivo.com`;
 
-/** The endpoint's username when a call comes FROM a browser ("sip:crm12…@phone.plivo.com"). */
+/**
+ * The endpoint's username when a call comes FROM a browser. A browser signed in with an access
+ * token calls as "sip:<username>_<a code of that sign-in>@phone.plivo.com" (seen on production,
+ * 2026-10-17); a username itself never holds "_". Both forms are understood.
+ */
 export function endpointOfCaller(from) {
-  const match = /^sip:([a-z][a-z0-9]{0,63})@/i.exec(String(from ?? '').trim());
+  const match = /^sip:([a-z][a-z0-9]{0,63})(?:_[a-z0-9]+)?@/i.exec(String(from ?? '').trim());
   return match ? match[1] : null;
 }
 

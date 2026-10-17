@@ -892,12 +892,15 @@ describe('the call log', () => {
 
 describe('calls inside the CRM (the browser)', () => {
   const signIn = async (client) => (await client.get('/api/calls/browser-phone')).body.data;
+  // As Plivo really sends it for a browser signed in with a token (seen on production,
+  // 2026-10-17): the endpoint's name, "_" and a code of that sign-in.
   const fromBrowser = (username, callId, to = '919876543210', uuid = 'browser-1') =>
     hook('inbound', {
       CallUUID: uuid,
-      From: `sip:${username}@phone.plivo.com`,
+      From: `sip:${username}_Ab12Cd34Ef56Gh78Ij90@phone.plivo.com`,
       To: to,
       'X-PH-CallId': callId,
+      'SIP-H-To': `<sip:${to}@phone.plivo.com>`,
     });
 
   it('each person signs in with their own endpoint, made once, for a day', async () => {
@@ -952,6 +955,9 @@ describe('calls inside the CRM (the browser)', () => {
     expect(answer.text).toContain('<Dial');
     expect(answer.text).toContain('callerId="918035000000"');
     expect(answer.text).toContain('<Number>919876543210</Number>');
+    // Only the customer is dialled: nobody's phone, and it is not taken for a customer's call.
+    expect(answer.text).not.toContain('<Number>91900000000');
+    expect(await Call.countDocuments({ direction: 'inbound' })).toBe(0);
     expect(answer.text).toContain(`dial-result?call=${callId}`);
     // Asked again: not dialled twice.
     const again = await fromBrowser(username, callId, '919876543210', 'browser-1b');
@@ -976,6 +982,27 @@ describe('calls inside the CRM (the browser)', () => {
       'Call to Asha Verma · 1:15',
     ]);
 
+    // The plain form of From is understood as well.
+    const plain = (await asAgent.post('/api/calls/browser').send({ contactId })).body.data.callId;
+    const plainAnswer = await hook('inbound', {
+      CallUUID: 'browser-plain',
+      From: `sip:${username}@phone.plivo.com`,
+      To: '919876543210',
+      'X-PH-CallId': plain,
+    });
+    expect(plainAnswer.text).toContain('<Number>919876543210</Number>');
+    // A call id from something that is not one of our browsers: ended, never taken for a
+    // customer's call (no phone of ours rings).
+    const odd = (await asAgent.post('/api/calls/browser').send({ contactId })).body.data.callId;
+    const oddAnswer = await hook('inbound', {
+      CallUUID: 'browser-odd',
+      From: '919333333333',
+      To: '919876543210',
+      'X-PH-CallId': odd,
+    });
+    expect(oddAnswer.text).not.toContain('<Dial');
+    expect(await Call.countDocuments({ direction: 'inbound' })).toBe(0);
+
     // A call the browser did not use in time is refused.
     const late = (await asAgent.post('/api/calls/browser').send({ contactId })).body.data.callId;
     // (Straight in the collection: Mongoose keeps createdAt as it was.)
@@ -986,6 +1013,18 @@ describe('calls inside the CRM (the browser)', () => {
     expect((await fromBrowser(username, late, '919876543210', 'browser-late')).text).not.toContain(
       '<Dial',
     );
+  });
+
+  it('a call from the browser that never reached Plivo does not stay “starting” for ever', async () => {
+    await signIn(asAgent);
+    const { callId } = (await asAgent.post('/api/calls/browser').send({ contactId })).body.data;
+    await settleWaitingCalls(new Date(Date.now() + 5 * 60 * 1000));
+    expect((await Call.findById(callId).lean()).status).toBe('initiated');
+    await settleWaitingCalls(new Date(Date.now() + 11 * 60 * 1000));
+    expect(await Call.findById(callId).lean()).toMatchObject({
+      status: 'failed',
+      hangupCause: 'never_reached_plivo',
+    });
   });
 
   it('a customer’s call rings the browser and the phone together', async () => {
