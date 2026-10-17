@@ -45,6 +45,8 @@ export const sendEmailBody = z
     cc: z.array(email).max(20).optional(),
     subject: z.string().trim().max(300).optional(),
     text: z.string().trim().min(1, 'Write the mail').max(50000),
+    // The same mail as laid out on the screen (bold, lists, headings, links), when it has a layout.
+    html: z.string().max(300000).optional(),
     attachments: z.array(attachmentRef).max(10).optional(),
   })
   .refine((body) => body.threadId || (body.to?.length && body.subject), {

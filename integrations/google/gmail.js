@@ -206,16 +206,40 @@ const encodeWord = (text) =>
     ? text
     : `=?UTF-8?B?${Buffer.from(text, 'utf8').toString('base64')}?=`;
 
-/** The text of a mail alone; or, with files, the text and each file as parts of one message. */
-function bodyLines(mail) {
+const newBoundary = () => `crm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+/**
+ * The words of a mail: the plain text alone, or (with a layout) the plain text and the HTML as
+ * two forms of the same mail; a mail program shows the HTML and falls back to the text.
+ */
+function contentLines(mail) {
   const textPart = [
     'Content-Type: text/plain; charset=UTF-8',
     'Content-Transfer-Encoding: base64',
     '',
     wrap76(Buffer.from(mail.text, 'utf8').toString('base64')),
   ];
+  if (!mail.html) return textPart;
+  const boundary = newBoundary();
+  return [
+    `Content-Type: multipart/alternative; boundary="${boundary}"`,
+    '',
+    `--${boundary}`,
+    ...textPart,
+    `--${boundary}`,
+    'Content-Type: text/html; charset=UTF-8',
+    'Content-Transfer-Encoding: base64',
+    '',
+    wrap76(Buffer.from(mail.html, 'utf8').toString('base64')),
+    `--${boundary}--`,
+  ];
+}
+
+/** The words of a mail alone; or, with files, the words and each file as parts of one message. */
+function bodyLines(mail) {
+  const textPart = contentLines(mail);
   if (!mail.attachments?.length) return textPart;
-  const boundary = `crm-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  const boundary = newBoundary();
   return [
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
     '',
@@ -237,7 +261,7 @@ function bodyLines(mail) {
  * Send a message from the person's own mailbox. With `threadId` (and the id header of the
  * message it answers) it lands in that conversation.
  * @param {{ from: string, to: string[], cc?: string[], subject: string, text: string,
- *           threadId?: string, inReplyTo?: string, references?: string,
+ *           html?: string, threadId?: string, inReplyTo?: string, references?: string,
  *           attachments?: { filename: string, mimeType: string, content: Buffer }[] }} mail
  * @returns {Promise<{ id: string, threadId: string }>}
  */
