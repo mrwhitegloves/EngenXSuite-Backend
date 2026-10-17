@@ -28,6 +28,7 @@ import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { LeadStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
 import {
+  cleanFormData,
   loadAccountForAction,
   registerAccountDeleteBlocker,
   updateAccount,
@@ -114,7 +115,7 @@ async function loadLookups(leads) {
       find(
         Account,
         ids((lead) => [lead.accountId]),
-        'name accountCode industry phone_number email website hq.city ownerId assignedUserIds',
+        'name accountCode industry phone_number email website hq.city ownerId assignedUserIds form_data',
       ),
       find(
         Plant,
@@ -256,6 +257,9 @@ function toDetailView(lead, lookups, actor) {
           city: account.hq?.city ?? null,
         }
       : null,
+    // The company's free fields (lead form answers and fields the team added); changed on the
+    // company (PATCH /api/accounts/:id), by someone who may edit it.
+    accountFormData: cleanFormData(account?.form_data) ?? {},
     canEditAccount:
       Boolean(account) && can(actor, 'edit', { feature: 'accounts', record: account }),
     canEditContact:

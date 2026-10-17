@@ -54,6 +54,18 @@ export function maskSensitive(value) {
 }
 
 /** An object without its null, undefined and empty-list entries; undefined when nothing is left. */
+/**
+ * Free fields as they are kept: names trimmed, empty values left out, in name order; null when
+ * nothing is left.
+ */
+export function cleanFormData(data) {
+  const entries = Object.entries(data ?? {})
+    .map(([key, value]) => [String(key).trim(), String(value ?? '').trim()])
+    .filter(([key, value]) => key && value)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.length > 0 ? Object.fromEntries(entries) : null;
+}
+
 function withoutEmpty(object) {
   const entries = Object.entries(object ?? {}).filter(
     ([, value]) =>
@@ -168,6 +180,8 @@ function toDetailView(account, actor, lookups) {
     owner: person(account.ownerId, lookups),
     assignedUsers: (account.assignedUserIds ?? []).map((id) => person(id, lookups)),
     tags: tagsOf(account.tagIds, lookups),
+    // Free fields (lead form answers and fields the team added), in name order.
+    form_data: cleanFormData(account.form_data) ?? {},
     lastActivityAt: account.lastActivityAt ?? null,
     createdAt: account.createdAt,
     updatedAt: account.updatedAt,
@@ -481,6 +495,7 @@ export async function createAccount(actor, data, context = {}) {
 
   const fields = { ...rest };
   for (const field of NESTED_FIELDS) fields[field] = withoutEmpty(fields[field]);
+  if ('form_data' in fields) fields.form_data = cleanFormData(fields.form_data) ?? undefined;
   const account = await Account.create({
     ...withoutEmpty(fields),
     // Taken last, after every check passed, so a refused request does not use up a code.
@@ -528,11 +543,14 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
   for (const [field, value] of Object.entries(requested)) {
     next[field] = NESTED_FIELDS.includes(field)
       ? (withoutEmpty({ ...account[field], ...value }) ?? null)
-      : value;
+      : field === 'form_data'
+        ? cleanFormData(value)
+        : value;
   }
   // Keep only what really differs from what is saved (ids are compared as text).
   const comparable = (field, value) => {
     if (['assignedUserIds', 'tagIds'].includes(field)) return (value ?? []).map(String);
+    if (field === 'form_data') return cleanFormData(value);
     return ID_FIELDS.includes(field) ? idText(value) : value;
   };
   const changed = Object.keys(next).filter(

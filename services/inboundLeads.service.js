@@ -24,10 +24,10 @@ import { Opportunity } from '../models/opportunity.model.js';
 import { Settings } from '../models/settings.model.js';
 import { SolutionCategory } from '../models/solutionCategory.model.js';
 import { User } from '../models/user.model.js';
-import { createAccountBody } from '../validation/accounts.js';
+import { FORM_DATA_MAX_FIELDS, createAccountBody } from '../validation/accounts.js';
 import { createContactBody } from '../validation/contacts.js';
-import { createAccount } from './accounts.service.js';
-import { recordActivity, recordSystemActivity } from './activities.service.js';
+import { cleanFormData, createAccount, updateAccount } from './accounts.service.js';
+import { recordSystemActivity } from './activities.service.js';
 import { createContacts } from './contacts.service.js';
 import { pickLeadOwner } from './leadAssignment.service.js';
 import { notify } from './notifications.service.js';
@@ -83,13 +83,16 @@ const questionKey = (name) =>
  * Turn the answers of a form into CRM fields.
  * @param {{ name: string, value: string }[]} answers
  * @param {{ question: string, crmField: string }[]} fieldMapping  The form's own mapping
- * @returns {{ mapped: Record<string, string>, notes: string[] }}
- *          notes: "Question: answer" for every answer that fills no field
+ * @returns {{ mapped: Record<string, string>, notes: string[], formData: Record<string, string> }}
+ *          formData: { question: answer } for every answer that fills no field (founder
+ *                    decision 2026-10-17: kept on the company's form_data, not as a note)
+ *          notes: kept for the callers; always empty now
  */
 export function mapAnswers(answers, fieldMapping = []) {
   const chosen = new Map(fieldMapping.map((item) => [item.question, item.crmField]));
   const mapped = {};
   const notes = [];
+  const formData = {};
   const names = {};
   for (const { name, value } of answers) {
     const text = String(value ?? '').trim();
@@ -109,9 +112,9 @@ export function mapAnswers(answers, fieldMapping = []) {
             : null);
     }
     if (field === 'ignore' || key === 'first_name' || key === 'last_name') continue;
-    // The first answer for a field wins; a second one is kept as a note, never lost.
+    // The first answer for a field wins; any other answer is kept in form_data, never lost.
     if (field && mapped[field] === undefined) mapped[field] = text;
-    else notes.push(`${name}: ${text}`);
+    else addFormData(formData, name, text);
   }
   if (!mapped['contact.name'] && (names.first_name || names.last_name)) {
     mapped['contact.name'] = [names.first_name, names.last_name].filter(Boolean).join(' ');
@@ -123,7 +126,22 @@ export function mapAnswers(answers, fieldMapping = []) {
   }).fields;
   if (tidy.email) mapped['contact.email'] = tidy.email;
   if (tidy.phone_number) mapped['contact.phone_number'] = tidy.phone_number;
-  return { mapped, notes };
+  return { mapped, notes, formData };
+}
+
+/** Put one answer into form_data under a name MongoDB accepts (no ".", no leading "$"). */
+function addFormData(formData, name, value) {
+  const base =
+    String(name ?? '')
+      .trim()
+      .replace(/\./g, '_')
+      .replace(/^\$+/, '')
+      .slice(0, 150) || 'answer';
+  let key = base;
+  for (let count = 2; formData[key] !== undefined && formData[key] !== value; count += 1) {
+    key = `${base.slice(0, 145)} (${count})`;
+  }
+  formData[key] = String(value).slice(0, 1000);
 }
 
 /** The part of the mapped answers that starts with "contact." or "account." as an object. */
@@ -140,16 +158,16 @@ function partOf(mapped, prefix) {
 
 /**
  * Check a part with the form's own validation. An answer that does not pass (a phone number
- * that is not one) is taken out and kept as a note, so one bad answer never loses the lead.
+ * that is not one) is taken out and kept in form_data, so one bad answer never loses the lead.
  */
-function validPart(schema, data, notes) {
+function validPart(schema, data, formData) {
   let current = { ...data };
   for (let attempt = 0; attempt < 10; attempt += 1) {
     const parsed = schema.safeParse(current);
     if (parsed.success) return parsed.data;
     const field = parsed.error.issues[0].path[0];
     if (field === undefined || field === 'name') break;
-    notes.push(`${field} (as typed): ${JSON.stringify(current[field])}`);
+    addFormData(formData, `${field} (as typed)`, JSON.stringify(current[field]));
     current = Object.fromEntries(Object.entries(current).filter(([key]) => key !== field));
   }
   throw badRequest('The answers of this lead could not be read.');
@@ -170,6 +188,25 @@ async function loadForm(formExternalId, pageId, answers) {
   const questions = answers.map((answer) => answer.name).filter(Boolean);
   await LeadForm.updateOne({ _id: form._id }, { $addToSet: { questions: { $each: questions } } });
   return form;
+}
+
+/**
+ * Add a lead's answers to its company's form_data: a new field is added, the same field gets the
+ * newest answer, the company's other fields stay. Written through updateAccount, so it is audited.
+ * Safe to run twice (the same answers change nothing).
+ */
+async function mergeFormData(accountId, formData) {
+  if (!accountId || Object.keys(formData).length === 0) return;
+  const account = await Account.findById(accountId).select('form_data').lean();
+  if (!account) return;
+  const merged = { ...(cleanFormData(account.form_data) ?? {}), ...formData };
+  // At most 50 fields: the newest answers are kept first.
+  const kept = Object.fromEntries(
+    Object.entries(merged)
+      .sort(([a], [b]) => Number(b in formData) - Number(a in formData))
+      .slice(0, FORM_DATA_MAX_FIELDS),
+  );
+  await updateAccount(systemActor(), String(accountId), { form_data: kept });
 }
 
 /** Keep on the enquiry what was made for it, so a second run reuses it. */
@@ -240,7 +277,7 @@ async function convert(inbound, { formExternalId, pageId }) {
   const actor = systemActor();
   const meta = await fetchMetaLead(inbound.externalId);
   const form = await loadForm(meta.formId ?? formExternalId, pageId, meta.answers);
-  const { mapped, notes } = mapAnswers(meta.answers, form.fieldMapping);
+  const { mapped, formData } = mapAnswers(meta.answers, form.fieldMapping);
   const sourceDetail = {
     campaign: meta.campaign.campaignName ?? undefined,
     adSet: meta.campaign.adSetName ?? undefined,
@@ -296,7 +333,7 @@ async function convert(inbound, { formExternalId, pageId }) {
       .sort({ createdAt: -1 })
       .lean();
     if (openLead) {
-      await remember(inbound, { unmappedNote: notes.join('\n') || undefined });
+      await mergeFormData(contact.accountId, formData);
       await noteRepeatEnquiry(inbound, contact, openLead, form);
       return;
     }
@@ -317,7 +354,7 @@ async function convert(inbound, { formExternalId, pageId }) {
       : null;
     if (existing) accountId = existing._id;
     else {
-      const data = validPart(createAccountBody, { ...companyData, name: companyName }, notes);
+      const data = validPart(createAccountBody, { ...companyData, name: companyName }, formData);
       const account = await createAccount(
         actor,
         { ...data, ownerId: ownerId ? String(ownerId) : null, confirmDuplicate: true },
@@ -332,7 +369,7 @@ async function convert(inbound, { formExternalId, pageId }) {
     const data = validPart(
       createContactBody,
       { ...personData, name: personData.name || displayName },
-      notes,
+      formData,
     );
     const [created] = await createContacts(actor, accountId, [data], {
       ...context,
@@ -364,8 +401,8 @@ async function convert(inbound, { formExternalId, pageId }) {
     await remember(inbound, { opportunityId: leadId });
   }
 
-  const note = notes.join('\n');
-  await remember(inbound, { unmappedNote: note || undefined });
+  // The answers that fill no field: on the company's form_data (shown on the company and the lead).
+  await mergeFormData(accountId, formData);
   await recordSystemActivity({
     subtype: 'lead_received',
     opportunityId: leadId,
@@ -382,22 +419,6 @@ async function convert(inbound, { formExternalId, pageId }) {
     refCollection: 'leads',
     refId: inbound._id,
   });
-  if (note) {
-    // The answers that fill no field, readable on the lead's timeline.
-    await recordActivity({
-      type: 'NOTE',
-      direction: 'inbound',
-      subtype: 'form_answers',
-      opportunityId: leadId,
-      contactId: contact._id,
-      occurredAt: inbound.receivedAt,
-      title: 'More answers from the form',
-      content: note.slice(0, 5000),
-      refCollection: 'leads',
-      refId: inbound._id,
-    });
-  }
-
   if (ownerId) {
     await notify({
       userId: ownerId,
@@ -522,7 +543,7 @@ function toFormView(form, names) {
       question,
       crmField: chosen.get(question) ?? '',
       // What happens without a choice, so the screen can say it.
-      automatic: mapAnswers([{ name: question, value: 'x' }]).notes.length === 0,
+      automatic: Object.keys(mapAnswers([{ name: question, value: 'x' }]).formData).length === 0,
     })),
     defaultOwner: named(names.users, form.defaultOwnerId),
     defaultSolutionCategory: named(names.categories, form.defaultSolutionCategoryId),

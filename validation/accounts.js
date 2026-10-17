@@ -100,6 +100,27 @@ const sourceDetail = z
   .object({ campaign: text(), adSet: text(), ad: text(), form: text() })
   .partial();
 
+// Free fields of a company: { "field name": "value" } (the answers of a lead form, and fields
+// the team adds). A name may not hold "." or start with "$" (MongoDB keys); an empty value
+// removes the field.
+export const FORM_DATA_MAX_FIELDS = 50;
+const formData = z
+  .record(
+    z
+      .string()
+      .min(1, 'Give the field a name')
+      .max(150, 'Use at most 150 characters for a field name')
+      .refine((key) => key.trim().length > 0, 'Give the field a name')
+      .refine((key) => !key.includes('.') && !key.startsWith('$'), {
+        message: 'A field name may not contain "." or start with "$"',
+      }),
+    z.string().max(1000, 'Use at most 1000 characters for a value'),
+  )
+  .refine((data) => Object.keys(data).length <= FORM_DATA_MAX_FIELDS, {
+    message: `At most ${FORM_DATA_MAX_FIELDS} fields`,
+  })
+  .nullable();
+
 // Every field a person can set on an account. (The account code is given by the system and
 // cannot be set or changed.)
 const fields = {
@@ -127,6 +148,7 @@ const fields = {
   sourceDetail,
   // Tags chosen from Settings → Tags.
   tagIds,
+  form_data: formData,
   // Changing these two needs the "assign" permission; the service checks it.
   ownerId: objectId,
   assignedUserIds: z
