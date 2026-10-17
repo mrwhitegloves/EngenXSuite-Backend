@@ -36,11 +36,15 @@ export function isValidMetaSignature(rawBody, header) {
   return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
-async function graphGet(path, fields, query = {}) {
-  return graphRequest('GET', path, { fields, ...query });
+async function graphGet(path, fields, query = {}, token) {
+  return graphRequest('GET', path, { fields, ...query }, token);
 }
 
-async function graphRequest(method, path, params = {}) {
+/**
+ * @param {string} [token]  Another token than the one in the settings (the Page's own token,
+ *                          found through a user or system user token; see resolvePage)
+ */
+async function graphRequest(method, path, params = {}, token = env.META_PAGE_ACCESS_TOKEN) {
   if (!env.META_PAGE_ACCESS_TOKEN) {
     throw createAppError('META_NOT_CONFIGURED', 503, 'The Meta page access token is not set.');
   }
@@ -56,7 +60,7 @@ async function graphRequest(method, path, params = {}) {
       method,
       // The token goes in a header, never in the address (addresses end up in logs).
       headers: {
-        Authorization: `Bearer ${env.META_PAGE_ACCESS_TOKEN}`,
+        Authorization: `Bearer ${token}`,
         ...(method === 'GET' ? {} : { 'Content-Type': 'application/x-www-form-urlencoded' }),
       },
       ...(method === 'GET' ? {} : { body: form.toString() }),
@@ -81,9 +85,10 @@ async function graphRequest(method, path, params = {}) {
  *                     answers: { name: string, value: string }[], campaign: object }>}
  */
 export async function fetchMetaLead(leadgenId) {
-  const lead = await graphGet(
-    encodeURIComponent(leadgenId),
-    'id,created_time,field_data,form_id,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,is_organic,platform',
+  const fields =
+    'id,created_time,field_data,form_id,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,is_organic,platform';
+  const lead = await withPageTokenWhenRefused((token) =>
+    graphGet(encodeURIComponent(leadgenId), fields, {}, token),
   );
   return {
     id: String(lead.id),
@@ -109,7 +114,10 @@ export async function fetchMetaLead(leadgenId) {
 /** The name of a lead form. null when Meta does not tell (the lead is still processed). */
 export async function fetchMetaFormName(formId) {
   try {
-    return (await graphGet(encodeURIComponent(formId), 'id,name')).name ?? null;
+    const form = await withPageTokenWhenRefused((token) =>
+      graphGet(encodeURIComponent(formId), 'id,name', {}, token),
+    );
+    return form.name ?? null;
   } catch {
     return null;
   }
@@ -117,10 +125,70 @@ export async function fetchMetaFormName(formId) {
 
 // ── The one-time connection of the Page ──────────────────────────────────────────────────────
 
-/** The Page the token belongs to (a Page token answers "me" with the Page). */
+/**
+ * The Page, and a token that may act for it. The setting may hold either:
+ *   - a Page access token: "me" is the Page itself; or
+ *   - a user or system user token (what Meta's Business settings give most easily): "me" is a
+ *     person, whose Pages (with each Page's own token) are listed by "me/accounts". With several
+ *     Pages, META_PAGE_ID says which one.
+ * Page-only calls (its subscribed apps, its lead forms) need the Page's own token. Nothing of a
+ * token is ever logged or answered.
+ * @returns {Promise<{ id: string, name: string | null, token: string }>}
+ */
+async function resolvePage() {
+  let pages = null;
+  try {
+    pages = (await graphGet('me/accounts', 'id,name,access_token', { limit: 100 })).data ?? [];
+  } catch (error) {
+    // A Page token has no "accounts": it is the Page itself.
+    if (!/accounts/i.test(error?.message ?? '')) throw error;
+  }
+  if (pages === null) {
+    const page = await graphGet('me', 'id,name');
+    return { id: String(page.id), name: page.name ?? null, token: env.META_PAGE_ACCESS_TOKEN };
+  }
+  const usable = pages.filter((page) => page.access_token);
+  const chosen = env.META_PAGE_ID
+    ? usable.find((page) => String(page.id) === String(env.META_PAGE_ID))
+    : usable.length === 1
+      ? usable[0]
+      : null;
+  if (!chosen) {
+    const names = usable.map((page) => `${page.name} (${page.id})`).join(', ');
+    throw createAppError(
+      'META_PAGE_UNKNOWN',
+      409,
+      usable.length === 0
+        ? 'The token is a person’s token and sees no Facebook Page. In Meta Business settings → Users → System users → Assign assets, give it the Page (with leads and Page settings allowed), then make the token again with the permissions pages_show_list, pages_manage_metadata and leads_retrieval.'
+        : env.META_PAGE_ID
+          ? `The token does not see the Page META_PAGE_ID names. It sees: ${names}.`
+          : `The token sees several Pages: ${names}. Put the id of the right one in META_PAGE_ID.`,
+    );
+  }
+  return { id: String(chosen.id), name: chosen.name ?? null, token: String(chosen.access_token) };
+}
+
+/** Try with the token of the settings; when Meta refuses it, once more with the Page's own. */
+async function withPageTokenWhenRefused(request) {
+  try {
+    return await request(env.META_PAGE_ACCESS_TOKEN);
+  } catch (error) {
+    if (error?.code !== 'META_ERROR') throw error;
+    let page;
+    try {
+      page = await resolvePage();
+    } catch {
+      throw error;
+    }
+    if (page.token === env.META_PAGE_ACCESS_TOKEN) throw error;
+    return request(page.token);
+  }
+}
+
+/** The Page the CRM works with (see resolvePage). */
 export async function fetchMetaPage() {
-  const page = await graphGet('me', 'id,name');
-  return { id: String(page.id), name: page.name ?? null };
+  const { id, name } = await resolvePage();
+  return { id, name };
 }
 
 /**
@@ -128,9 +196,12 @@ export async function fetchMetaPage() {
  * @returns {Promise<{ id: string, name: string | null, fields: string[] }[]>}
  */
 export async function fetchPageSubscriptions(pageId) {
+  const { token } = await resolvePage();
   const body = await graphGet(
     `${encodeURIComponent(pageId)}/subscribed_apps`,
     'id,name,subscribed_fields',
+    {},
+    token,
   );
   return (body.data ?? []).map((app) => ({
     id: String(app.id),
@@ -141,9 +212,13 @@ export async function fetchPageSubscriptions(pageId) {
 
 /** Tell Meta to send this Page's new leads to our app (the app of the token). */
 export async function subscribePageToLeads(pageId) {
-  const body = await graphRequest('POST', `${encodeURIComponent(pageId)}/subscribed_apps`, {
-    subscribed_fields: 'leadgen',
-  });
+  const { token } = await resolvePage();
+  const body = await graphRequest(
+    'POST',
+    `${encodeURIComponent(pageId)}/subscribed_apps`,
+    { subscribed_fields: 'leadgen' },
+    token,
+  );
   return body?.success === true;
 }
 
@@ -152,12 +227,14 @@ export async function subscribePageToLeads(pageId) {
  * @returns {Promise<{ id: string, name: string, status: string | null, questions: string[] }[]>}
  */
 export async function fetchPageForms(pageId) {
+  const { token } = await resolvePage();
   const body = await graphGet(
     `${encodeURIComponent(pageId)}/leadgen_forms`,
     'id,name,status,questions',
     {
       limit: 100,
     },
+    token,
   );
   return (body.data ?? []).map((form) => ({
     id: String(form.id),
