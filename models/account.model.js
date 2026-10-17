@@ -62,6 +62,10 @@ const accountSchema = new mongoose.Schema(
     // the account stores only the status's _id.
     statusId: { type: ObjectId, ref: 'AccountStatus', required: true },
     tagIds: { type: [{ type: ObjectId, ref: 'Tag' }], default: [] },
+    // Free fields of the company (founder decision 2026-10-17): the answers of a lead form that
+    // fill no CRM field, and any field the team adds by hand. { "field name": "value" }. The
+    // name "form_data" is the founder's own.
+    form_data: { type: Map, of: String, default: undefined },
 
     industrial: {
       type: new mongoose.Schema(

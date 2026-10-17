@@ -255,7 +255,6 @@ describe('a lead from a Meta form', () => {
       status: 'processed',
       phone_number: '+919876543210',
       email: 'ravi@kalyaniforge.com',
-      unmappedNote: 'How many machines do you have?: 40',
       campaign: { campaignName: 'Diwali OEE campaign', formName: 'Factory OEE enquiry' },
     });
     expect(inbound.mapped).toMatchObject({
@@ -266,6 +265,9 @@ describe('a lead from a Meta form', () => {
     });
 
     const account = await Account.findById(inbound.accountId).lean();
+    // An answer that fills no field is kept on the company's form_data, not as a note.
+    expect(account.form_data).toEqual({ 'How many machines do you have?': '40' });
+    expect(await Activity.countDocuments({ subtype: 'form_answers' })).toBe(0);
     expect(account).toMatchObject({
       name: 'Kalyani Forge',
       accountCode: 'EGX-10001',
@@ -307,10 +309,9 @@ describe('a lead from a Meta form', () => {
     expect(timeline.map((entry) => [entry.type, entry.subtype])).toEqual([
       ['SYSTEM', 'lead_created'],
       ['SYSTEM', 'lead_received'],
-      ['NOTE', 'form_answers'],
+      // No note of the other answers any more: they are on the company's form_data.
       ['TASK', 'task_created'],
     ]);
-    expect(timeline[2].content).toBe('How many machines do you have?: 40');
 
     const tasks = await Task.find().lean();
     expect(tasks).toHaveLength(1);
@@ -353,9 +354,11 @@ describe('a lead from a Meta form', () => {
     expect(contact.phone_number).toBeUndefined();
     expect(contact.email).toBeUndefined();
     expect((await Account.findById(contact.accountId).lean()).name).toBe('Sunita Rao');
-    const inbound = await InboundLead.findOne().lean();
-    expect(inbound.unmappedNote).toContain('phone_number (as typed): "12345"');
-    expect(inbound.unmappedNote).toContain('email (as typed): "not-an-email"');
+    // The answers that did not pass are kept on the company's form_data, as typed.
+    expect((await Account.findById(contact.accountId).lean()).form_data).toEqual({
+      'phone_number (as typed)': '"12345"',
+      'email (as typed)': '"not-an-email"',
+    });
   });
 
   it('a second person of a company that is already there joins that company', async () => {
@@ -402,8 +405,10 @@ describe('a lead from a Meta form', () => {
     const again = await Activity.findOne({ subtype: 'lead_enquired_again' }).lean();
     expect(again).toMatchObject({
       title: 'Enquired again through Meta ads: Factory OEE enquiry',
-      content: 'What do you need?: Price list',
     });
+    // The new answer joins the company's form_data.
+    const company = await Account.findById(first.accountId).lean();
+    expect(company.form_data).toEqual({ 'What do you need?': 'Price list' });
     expect((await Notification.find().sort({ _id: 1 }).lean()).map((item) => item.title)).toEqual([
       'New lead: Ravi Kumar',
       'Enquired again: Ravi Kumar',
@@ -518,7 +523,8 @@ describe('lead forms and failed leads', () => {
       'contact.phone_number': '+919876543210',
       'account.hq.city': 'Chakan',
     });
-    expect(result.notes).toEqual(['Budget: 10 lakh']);
+    expect(result.formData).toEqual({ Budget: '10 lakh' });
+    expect(result.notes).toEqual([]);
   });
 
   it('the Lead forms screen lists the forms and their questions, and saves a mapping', async () => {
@@ -667,5 +673,54 @@ describe('the one-time connection of the Facebook Page', () => {
     expect((await asCeo.post('/api/lead-forms/meta/forms/sync')).body.data.found).toBe(2);
     // The Page's token is never part of an answer.
     expect(JSON.stringify(status)).not.toContain(PAGE_TOKEN_FROM_USER);
+  });
+});
+
+describe('form_data: the free fields of a company', () => {
+  it('shows on the company and its lead, and the team adds, changes and removes fields', async () => {
+    lead('111', {
+      full_name: 'Ravi Kumar',
+      phone_number: '9876543210',
+      company_name: 'Kalyani Forge',
+      'what_is_your_role_in_the_organization?': 'Plant Head',
+      'how_soon_are_you_planning_to_implement?': '1 month',
+    });
+    await deliver('111');
+    const inbound = await InboundLead.findOne().lean();
+    const accountId = String(inbound.accountId);
+    const company = (await asCeo.get(`/api/accounts/${accountId}`)).body.data;
+    expect(company.form_data).toEqual({
+      'how_soon_are_you_planning_to_implement?': '1 month',
+      'what_is_your_role_in_the_organization?': 'Plant Head',
+    });
+    const leadView = (await asCeo.get(`/api/opportunities/${inbound.opportunityId}`)).body.data;
+    expect(leadView.accountFormData).toEqual(company.form_data);
+
+    // A field added by hand, one changed, one removed (an empty value removes it).
+    const saved = await asCeo.patch(`/api/accounts/${accountId}`).send({
+      form_data: {
+        'what_is_your_role_in_the_organization?': 'Plant Head',
+        'how_soon_are_you_planning_to_implement?': '',
+        'Number of plants': ' 3 ',
+      },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.data.form_data).toEqual({
+      'Number of plants': '3',
+      'what_is_your_role_in_the_organization?': 'Plant Head',
+    });
+    const { AuditLog } = await import('../models/auditLog.model.js');
+    const audit = await AuditLog.findOne({ action: 'account.updated' }).sort({ _id: -1 }).lean();
+    expect(audit.newValue.form_data).toMatchObject({ 'Number of plants': '3' });
+    // Names MongoDB cannot keep, and too long values, are refused.
+    for (const bad of [{ 'a.b': 'x' }, { $where: 'x' }, { ok: 'x'.repeat(1001) }]) {
+      expect(
+        (await asCeo.patch(`/api/accounts/${accountId}`).send({ form_data: bad })).status,
+      ).toBe(400);
+    }
+    // Emptied: no free fields left.
+    const emptied = await asCeo.patch(`/api/accounts/${accountId}`).send({ form_data: {} });
+    expect(emptied.body.data.form_data).toEqual({});
+    expect((await Account.findById(accountId).lean()).form_data).toBeUndefined();
   });
 });
