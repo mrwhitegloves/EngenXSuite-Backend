@@ -99,6 +99,9 @@ const envSchema = z.object({
   META_APP_SECRET: z.string().min(1).optional(),
   META_VERIFY_TOKEN: z.string().min(1).optional(),
   META_PAGE_ACCESS_TOKEN: z.string().min(1).optional(),
+  // Only when META_PAGE_ACCESS_TOKEN is a person's (or system user's) token that sees several
+  // Facebook Pages: the id of the Page whose lead ads come to the CRM.
+  META_PAGE_ID: z.string().min(1).optional(),
   // WhatsApp Cloud API (docs/WHATSAPP.md). Without them WhatsApp is switched off.
   //   WHATSAPP_PHONE_NUMBER_ID  the id of the number in Meta (not the phone number itself)
   //   WHATSAPP_ACCESS_TOKEN     a permanent token of a system user with the WhatsApp permissions

@@ -40,14 +40,43 @@ const metaLeads = new Map();
 let metaIsDown = false;
 const graphCalls = [];
 // The Page behind the token: which apps get its leads, and its lead forms.
-const metaPage = { subscribedFields: [], subscribeCalls: [] };
+// tokenKind: what META_PAGE_ACCESS_TOKEN is. 'page': the Page's own token. 'user': a person's
+// or system user's token, which sees the Page through "me/accounts" (with the Page's token).
+const metaPage = { subscribedFields: [], subscribeCalls: [], tokenKind: 'page' };
+const PAGE_TOKEN_FROM_USER = 'page-token-found-through-the-user';
 function fakeGraph(url, options) {
   const { pathname } = new URL(url);
   const id = pathname.split('/').pop();
   graphCalls.push({ id, authorization: options?.headers?.Authorization, url: String(url) });
   const answer = (status, body) => ({ ok: status === 200, status, json: async () => body });
   if (metaIsDown) return answer(400, { error: { message: 'Error validating access token' } });
-  if (pathname.endsWith('/me')) return answer(200, { id: '900200', name: 'EngenX' });
+  // As Meta answers: a Page token has no "accounts"; a person's token is not a Page.
+  if (pathname.endsWith('/me/accounts')) {
+    if (metaPage.tokenKind === 'page') {
+      return answer(400, {
+        error: { message: '(#100) Tried accessing nonexisting field (accounts)' },
+      });
+    }
+    return answer(200, {
+      data: [{ id: '900200', name: 'EngenX', access_token: PAGE_TOKEN_FROM_USER }],
+    });
+  }
+  if (pathname.endsWith('/me')) {
+    return metaPage.tokenKind === 'page'
+      ? answer(200, { id: '900200', name: 'EngenX' })
+      : answer(200, { id: '555', name: 'CRM system user' });
+  }
+  // Page-only things need the Page's own token when the setting holds a person's token.
+  const isPageCall = /\/900200\/(subscribed_apps|leadgen_forms)$/.test(pathname);
+  if (
+    isPageCall &&
+    metaPage.tokenKind === 'user' &&
+    options?.headers?.Authorization !== `Bearer ${PAGE_TOKEN_FROM_USER}`
+  ) {
+    return answer(400, {
+      error: { message: '(#190) This method must be called with a Page Access Token' },
+    });
+  }
   if (pathname.endsWith('/900200/subscribed_apps')) {
     if (options?.method === 'POST') {
       metaPage.subscribeCalls.push(String(options.body));
@@ -152,6 +181,7 @@ beforeEach(async () => {
   await clearTestDb();
   metaLeads.clear();
   graphCalls.length = 0;
+  metaPage.tokenKind = 'page';
   metaIsDown = false;
   vi.stubGlobal('fetch', vi.fn(fakeGraph));
   await runSeed({ productName: 'P', companyName: 'C', workspaceDomain: 'engenx.in' });
@@ -616,5 +646,26 @@ describe('the one-time connection of the Facebook Page', () => {
     const down = (await asCeo.get('/api/lead-forms/meta/page')).body.data;
     expect(down.problem).toContain('Error validating access token');
     metaIsDown = false;
+  });
+
+  it('works with a person’s or system user’s token too: the Page and its own token are found', async () => {
+    metaPage.tokenKind = 'user';
+    metaPage.subscribedFields = [];
+    metaPage.subscribeCalls.length = 0;
+    const status = (await asCeo.get('/api/lead-forms/meta/page')).body.data;
+    expect(status).toMatchObject({
+      page: { id: '900200', name: 'EngenX' },
+      isSubscribed: false,
+      problem: null,
+    });
+    const connected = await asCeo.post('/api/lead-forms/meta/page/connect');
+    expect(connected.body.data.isSubscribed).toBe(true);
+    const subscribe = graphCalls.filter((call) => call.id === 'subscribed_apps');
+    expect(subscribe.every((call) => call.authorization === `Bearer ${PAGE_TOKEN_FROM_USER}`)).toBe(
+      true,
+    );
+    expect((await asCeo.post('/api/lead-forms/meta/forms/sync')).body.data.found).toBe(2);
+    // The Page's token is never part of an answer.
+    expect(JSON.stringify(status)).not.toContain(PAGE_TOKEN_FROM_USER);
   });
 });
