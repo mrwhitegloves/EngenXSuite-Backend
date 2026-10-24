@@ -224,7 +224,7 @@ describe('starting a chat from a person (Accounts → People)', () => {
     expect(chat).toMatchObject({
       phone: '+919876543210',
       name: 'Rajesh Patil',
-      contact: { name: 'Rajesh Patil', whatsappOptIn: false },
+      contact: { name: 'Rajesh Patil', whatsappOptIn: false, doNotCall: false },
       account: { name: 'Shakti Castings', code: expect.stringMatching(/^EGX-/) },
       lead: { name: 'Furnace energy monitoring', code: expect.stringMatching(/^EGL-/) },
       assignedTo: { name: 'Asha Agent' },
