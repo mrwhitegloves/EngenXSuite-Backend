@@ -371,6 +371,23 @@ describe('messages', () => {
     });
   });
 
+  it('a tap on a template button shows as its text and opens the 24 hours', async () => {
+    const { conversationId } = (await startChat(asAsha)).body.data;
+    await deliver(
+      incoming(CUSTOMER, {
+        type: 'button',
+        button: { text: "Yes, let's talk", payload: "Yes, let's talk" },
+        context: { id: 'wamid.unknown' },
+      }),
+    );
+    const chat = (await openChat(asAsha, conversationId)).body.data;
+    expect(chat.isWindowOpen).toBe(true);
+    expect(chat.messages).toMatchObject([
+      { direction: 'inbound', type: 'text', text: "Yes, let's talk" },
+    ]);
+    expect(chat.snippet).toBe("Yes, let's talk");
+  });
+
   it('pages older messages with "before"', async () => {
     await deliver(incoming(CUSTOMER, { text: { body: 'Hello' } }));
     const [row] = (await listOf(asAsha)).data;

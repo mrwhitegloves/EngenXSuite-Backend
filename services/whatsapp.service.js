@@ -191,6 +191,16 @@ function snippetOf(message) {
 
 /** The parts of a customer's message that we keep, by its kind. */
 function readIncoming(incoming) {
+  // A tap on a quick-reply button of a template ("button"), or on a button or list item of an
+  // interactive message: kept as the text of what was tapped.
+  if (incoming.type === 'button' || incoming.type === 'interactive') {
+    const tapped =
+      incoming.button?.text ??
+      incoming.interactive?.button_reply?.title ??
+      incoming.interactive?.list_reply?.title ??
+      '';
+    return { type: 'text', text: tapped || `[${TYPE_WORDS.other}]` };
+  }
   const type = TYPES.includes(incoming.type) ? incoming.type : 'other';
   const part = incoming[incoming.type] ?? {};
   const kept = { type };
