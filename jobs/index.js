@@ -18,6 +18,7 @@ import { runCallSettleJob, runCallSettleSweepJob } from './calls.jobs.js';
 import { runPing } from './system.jobs.js';
 import { runTaskRemindersJob } from './tasks.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
+import { runWhatsAppMediaJob } from './whatsapp.jobs.js';
 
 // Every background job name and the function that runs it. A worker looks the name up here.
 // To add a job: write the handler in `<feature>.jobs.js`, add its name to
@@ -50,4 +51,5 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.calendarSync]: runCalendarSyncJob,
   [JOB_NAMES.calendarSyncAll]: runCalendarSyncAllJob,
   [JOB_NAMES.meetingReminders]: runMeetingRemindersJob,
+  [JOB_NAMES.whatsappMedia]: runWhatsAppMediaJob,
 };

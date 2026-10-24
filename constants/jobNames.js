@@ -23,4 +23,5 @@ export const JOB_NAMES = {
   calendarSync: 'calendar.sync',
   calendarSyncAll: 'calendar.sync-all',
   meetingReminders: 'meetings.reminders',
+  whatsappMedia: 'whatsapp.media',
 };

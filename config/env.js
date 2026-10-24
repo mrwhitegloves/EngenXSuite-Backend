@@ -113,6 +113,10 @@ const envSchema = z.object({
   WHATSAPP_ACCESS_TOKEN: z.string().min(1).optional(),
   WHATSAPP_VERIFY_TOKEN: z.string().min(1).optional(),
   WHATSAPP_APP_SECRET: z.string().min(1).optional(),
+  // The id of the WhatsApp Business Account (WhatsApp Manager → Account tools, or the API setup
+  // page of the app). Not secret. Needed for the list of approved templates; without it the
+  // template window stays empty, everything else works.
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().min(1).optional(),
   META_GRAPH_VERSION: z
     .string()
     .regex(/^v\d+\.\d+$/, 'must look like v21.0')
