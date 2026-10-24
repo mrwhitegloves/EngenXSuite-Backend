@@ -447,6 +447,7 @@ function toView(conversation, names, now) {
           designation: contact.designation ?? null,
           email: contact.email ?? null,
           whatsappOptIn: contact.consent?.whatsappOptIn ?? false,
+          doNotCall: contact.consent?.doNotCall ?? false,
         }
       : null,
     account: account
