@@ -31,6 +31,7 @@ import { recordActivity } from './activities.service.js';
 import { findOptedOut, isOptedOut, optOutByMessage } from './bulkOptOuts.service.js';
 import { notify } from './notifications.service.js';
 import { registerWebhookProcessor } from './webhooks.service.js';
+import { explainWhatsAppError } from './whatsappErrors.js';
 import {
   classifyFile,
   cleanFileName,
@@ -606,7 +607,8 @@ async function messageViews(messages) {
         text: message.text ?? '',
         templateName: message.templateName ?? null,
         status: message.status,
-        error: message.errorMessage ?? null,
+        // Meta's reason in plain words, with what to do (and Meta's code for support).
+        error: explainWhatsAppError(message.errorCode, message.errorMessage),
         sentBy: message.sentBy ? (senderNames.get(String(message.sentBy)) ?? null) : null,
         sentAt: message.sentAt,
         media: message.media
@@ -850,6 +852,9 @@ async function sendAndKeep(actor, conversation, draft, transmit, context, now) {
       errorMessage: String(error?.message ?? 'Not sent').slice(0, 300),
     });
     announce();
+    // The person sees the same plain reason as on the failed message.
+    if (error?.providerCode)
+      error.message = explainWhatsAppError(error.providerCode, error.message);
     throw error;
   }
   const message = await WhatsAppMessage.create({

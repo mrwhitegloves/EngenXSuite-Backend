@@ -503,6 +503,53 @@ describe('files', () => {
   });
 });
 
+describe('why a message failed', () => {
+  it('shows Meta’s reason in plain words with what to do', async () => {
+    const { conversationId } = (await startChat(asAsha)).body.data;
+    const send = () =>
+      asAsha.post(`/api/whatsapp/conversations/${conversationId}/templates`).send({
+        templateName: 'first_contact',
+        language: 'en',
+        values: { 1: 'Rajesh', 2: 'Asha' },
+      });
+    // Accepted by Meta, then given up later: the reason comes with the status.
+    expect((await send()).status).toBe(200);
+    await deliver({
+      statuses: [
+        {
+          id: 'wamid.out1',
+          status: 'failed',
+          timestamp: '1',
+          errors: [
+            {
+              code: 131049,
+              title: 'This message was not delivered to maintain healthy ecosystem engagement.',
+            },
+          ],
+        },
+      ],
+    });
+    let chat = (await openChat(asAsha, conversationId)).body.data;
+    expect(chat.messages[0]).toMatchObject({ status: 'failed' });
+    expect(chat.messages[0].error).toContain('Meta held back this marketing message');
+    expect(chat.messages[0].error).toContain('(Meta code 131049)');
+
+    // Refused at once (payment problem): the answer and the kept message say why.
+    meta.failWith = { message: 'Business eligibility payment issue', code: 131042 };
+    const refused = await send();
+    expect(refused.status).toBe(502);
+    expect(refused.body.error.message).toContain('payment problem');
+    chat = (await openChat(asAsha, conversationId)).body.data;
+    expect(chat.messages.at(-1).error).toContain('(Meta code 131042)');
+
+    // A code the CRM does not know keeps Meta's own words.
+    meta.failWith = { message: 'Something new', code: 999999 };
+    await send();
+    chat = (await openChat(asAsha, conversationId)).body.data;
+    expect(chat.messages.at(-1).error).toContain('(Meta code 999999)');
+  });
+});
+
 describe('the 24-hour window and the opt-out', () => {
   it('after 24 hours text and files are refused, a template still goes', async () => {
     await deliver(incoming(CUSTOMER, { text: { body: 'Hello' } }));
