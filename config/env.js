@@ -29,6 +29,11 @@ const envSchema = z.object({
   // Development database. When set, it is used for every run that is not production,
   // so local work and seed data never touch the production database.
   MONGODB_URI_DEV: mongoUri.optional(),
+  // The website's own database (engenx.in: visitor pageviews and contact-form leads), read by
+  // the Website screen. Read only: a database user with the "read" role on that database is
+  // enough. Not set: the Website screen says it is not connected.
+  WEBSITE_MONGODB_URI: mongoUri.optional(),
+  WEBSITE_DB_NAME: z.string().min(1).default('engenx'),
 
   SESSION_SECRET: z.string().min(32, 'must be at least 32 characters'),
   GOOGLE_SIGNIN_CLIENT_ID: z.string().min(1),
