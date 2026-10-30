@@ -32,6 +32,7 @@ export const FEATURES = [
   'campaigns',
   'imports',
   'website',
+  'links',
   'chat',
   'users',
   'settings',
