@@ -25,7 +25,7 @@ const IMAGE_TYPES = [
   { extension: 'webp', contentType: 'image/webp', signature: [0x52, 0x49, 0x46, 0x46], webp: true },
 ];
 
-function detectImageType(buffer) {
+export function detectImageType(buffer) {
   return IMAGE_TYPES.find(
     (type) =>
       type.signature.every((byte, index) => buffer[index] === byte) &&
