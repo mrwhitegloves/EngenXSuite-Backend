@@ -12,14 +12,16 @@ import { loadAccountListLookups, updateAccount } from './accounts.service.js';
 // What is done with MANY companies at once, chosen on the Accounts screen: give them to
 // people, and take them out as a file. (A bundle from them: services/bundles.service.js.)
 // Every company is still handled by the normal rules: only companies inside the actor's scope
-// are touched, and an owner is set through updateAccount(), so each change is audited.
+// are touched, and an owner is set through updateAccount(), so each change is audited and the
+// company's leads follow the new owner.
 
 export const MAX_BULK_ACCOUNTS = 2000;
 const NOT_DELETED = { deletedAt: null };
 
 /**
- * Give companies that have NO owner yet to people: all to one person, or one after the other
- * to several (round robin). A company that has an owner already is skipped, never taken away.
+ * Give companies to people: all to one person, or one after the other to several (round robin).
+ * A company that has an owner gets the new one (founder, 2026-10-31: bulk assign also moves
+ * companies); only a company that already belongs to the chosen person is skipped.
  * @param {{ accountIds: string[], userIds: string[] }} request  Validated. One user: all go
  *        to that person. Several: they take turns, in the order given.
  */
@@ -51,11 +53,11 @@ export async function bulkAssignAccounts(actor, { accountIds, userIds }, context
   const failed = [];
   let next = 0;
   for (const account of accounts) {
-    if (account.ownerId) {
+    const user = turn[next % turn.length];
+    if (String(account.ownerId ?? '') === String(user._id)) {
       skipped.push(account.name);
       continue;
     }
-    const user = turn[next % turn.length];
     try {
       await updateAccount(actor, String(account._id), { ownerId: String(user._id) }, context);
       counts.set(String(user._id), counts.get(String(user._id)) + 1);
@@ -69,7 +71,7 @@ export async function bulkAssignAccounts(actor, { accountIds, userIds }, context
   }
   return {
     assigned: next,
-    // Had an owner already: left with that person.
+    // Already with the person whose turn it was: nothing to change.
     skipped: skipped.length,
     skippedNames: skipped.slice(0, 20),
     failed,
