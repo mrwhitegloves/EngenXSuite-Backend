@@ -9,6 +9,7 @@ import { Machine } from '../models/machine.model.js';
 import { Plant } from '../models/plant.model.js';
 import { AccountStatus } from '../models/statusLists.model.js';
 import { User } from '../models/user.model.js';
+import { Opportunity } from '../models/opportunity.model.js';
 import { SOCKET_EVENTS } from '../constants/socketEvents.js';
 import { emitToAll } from '../infra/realtime.js';
 import { writeAudit } from '../lib/audit.js';
@@ -653,6 +654,7 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
   }
   if (changed.includes('ownerId')) {
     await writeAudit({ ...base, action: 'account.owner_changed', ...entry(['ownerId']) });
+    await moveAccountLeads(actor, account, next.ownerId, context);
   }
   if (changed.includes('assignedUserIds')) {
     await writeAudit({
@@ -664,6 +666,64 @@ export async function updateAccount(actor, accountId, changes, context = {}) {
 
   if (!context.quiet) emitToAll(SOCKET_EVENTS.accountsChanged);
   return detailOf(await Account.findById(account._id).lean(), actor);
+}
+
+/**
+ * When a company gets a new owner, its leads follow (founder, 2026-10-31), so the new owner sees
+ * the company's pipeline: a lead that belonged to the previous owner (or to nobody) gets the new
+ * owner; a lead that belongs to someone else stays theirs, and the new owner is added to its
+ * assigned people. Each moved lead is audited. Nothing happens when the owner is cleared.
+ */
+async function moveAccountLeads(actor, account, newOwnerId, context = {}) {
+  if (!newOwnerId) return;
+  const previous = account.ownerId ? String(account.ownerId) : null;
+  const leads = await Opportunity.find({ accountId: account._id, deletedAt: null })
+    .select('ownerId assignedUserIds')
+    .lean();
+  const followOwner = leads.filter((lead) => !lead.ownerId || String(lead.ownerId) === previous);
+  const someoneElse = leads.filter(
+    (lead) =>
+      lead.ownerId &&
+      String(lead.ownerId) !== previous &&
+      String(lead.ownerId) !== String(newOwnerId),
+  );
+  if (followOwner.length) {
+    await Opportunity.updateMany(
+      { _id: { $in: followOwner.map((lead) => lead._id) } },
+      { $set: { ownerId: newOwnerId } },
+    );
+  }
+  if (someoneElse.length) {
+    await Opportunity.updateMany(
+      { _id: { $in: someoneElse.map((lead) => lead._id) } },
+      { $addToSet: { assignedUserIds: newOwnerId } },
+    );
+  }
+  for (const lead of followOwner) {
+    await writeAudit({
+      actor,
+      action: 'opportunity.owner_changed',
+      entityType: 'opportunities',
+      entityId: lead._id,
+      oldValue: { ownerId: lead.ownerId ?? null, reason: 'company owner changed' },
+      newValue: { ownerId: newOwnerId },
+      requestId: context.requestId,
+    });
+  }
+  for (const lead of someoneElse) {
+    await writeAudit({
+      actor,
+      action: 'opportunity.assignment_changed',
+      entityType: 'opportunities',
+      entityId: lead._id,
+      oldValue: { assignedUserIds: lead.assignedUserIds ?? [] },
+      newValue: { added: newOwnerId, reason: 'new company owner' },
+      requestId: context.requestId,
+    });
+  }
+  if ((followOwner.length || someoneElse.length) && !context.quiet) {
+    emitToAll(SOCKET_EVENTS.opportunitiesChanged);
+  }
 }
 
 // Reasons an account must not be deleted. Each check answers a sentence, or null when it has no

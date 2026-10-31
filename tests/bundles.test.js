@@ -175,8 +175,8 @@ describe('many companies at once', () => {
     expect((await asAgent.get('/api/accounts/ids')).body.data.ids).toEqual([]);
   });
 
-  it('are given to people in turns; a company that has an owner is skipped', async () => {
-    // Both companies belong to the CEO, who made them. A third and a fourth have nobody.
+  it('are given to people in turns, also companies that have an owner', async () => {
+    // Bharat Forge belongs to the CEO, who made it. Three more have nobody.
     const free = [];
     for (const name of ['Free One', 'Free Two', 'Free Three']) {
       const made = await asCeo.post('/api/accounts').send({ name });
@@ -191,30 +191,36 @@ describe('many companies at once', () => {
       .post('/api/accounts/bulk/assign')
       .send({ accountIds, userIds: [agentId, managerId] });
     expect(result.status).toBe(200);
+    // Founder, 2026-10-31: a company with an owner gets the new one too.
     expect(result.body.data).toMatchObject({
-      assigned: 3,
-      skipped: 1,
-      skippedNames: ['Bharat Forge'],
+      assigned: 4,
+      skipped: 0,
       failed: [],
       perUser: [
         { name: 'Asha Agent', count: 2 },
-        { name: 'Mira Manager', count: 1 },
+        { name: 'Mira Manager', count: 2 },
       ],
     });
-    const owners = await Account.find({ name: /^Free/ }).sort({ name: 1 }).lean();
-    expect(owners.map((item) => [item.name, String(item.ownerId)])).toEqual([
-      ['Free One', agentId],
-      ['Free Three', agentId],
-      ['Free Two', managerId],
+    const owners = await Account.find({ _id: { $in: accountIds } })
+      .sort({ createdAt: 1, _id: 1 })
+      .lean();
+    expect(owners.map((item) => String(item.ownerId))).toEqual([
+      agentId,
+      managerId,
+      agentId,
+      managerId,
     ]);
-    // Bharat Forge keeps its owner.
-    expect(String((await Account.findById(forge.account.id).lean()).ownerId)).not.toBe(agentId);
 
-    // Run again: everything has an owner now, nothing moves.
+    // All to the manager: the two that are hers already are skipped, the others move.
     const again = await asCeo
       .post('/api/accounts/bulk/assign')
       .send({ accountIds, userIds: [managerId] });
-    expect(again.body.data).toMatchObject({ assigned: 0, skipped: 4 });
+    expect(again.body.data).toMatchObject({ assigned: 2, skipped: 2 });
+    expect(
+      (await Account.find({ _id: { $in: accountIds } }).lean()).every(
+        (item) => String(item.ownerId) === managerId,
+      ),
+    ).toBe(true);
     expect(
       (await asAgent.post('/api/accounts/bulk/assign').send({ accountIds, userIds: [agentId] }))
         .status,

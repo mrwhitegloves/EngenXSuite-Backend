@@ -778,3 +778,41 @@ describe('leads export', () => {
     expect(entry.newValue).toMatchObject({ leads: 1, filters: { sort: 'name' } });
   });
 });
+
+describe('a company gets a new owner', () => {
+  it("its leads follow the owner; someone else's lead stays theirs and the new owner joins it", async () => {
+    // The agent owns the company: one lead is hers, one nobody's, one the other agent's.
+    const hers = await makeLead(asAgent);
+    const nobodys = await makeLead(asCeo, { ownerId: null });
+    const omars = await makeLead(asCeo, { ownerId: String(otherAgent._id) });
+
+    const moved = await asCeo
+      .patch(`/api/accounts/${accountId}`)
+      .send({ ownerId: String(manager._id) });
+    expect(moved.status).toBe(200);
+
+    const byId = Object.fromEntries(
+      (await Opportunity.find().lean()).map((lead) => [String(lead._id), lead]),
+    );
+    expect(String(byId[hers.id].ownerId)).toBe(String(manager._id));
+    expect(String(byId[nobodys.id].ownerId)).toBe(String(manager._id));
+    expect(String(byId[omars.id].ownerId)).toBe(String(otherAgent._id));
+    expect(byId[omars.id].assignedUserIds.map(String)).toContain(String(manager._id));
+    expect(await AuditLog.countDocuments({ action: 'opportunity.owner_changed' })).toBe(2);
+
+    // The new owner's pipeline shows the company's leads.
+    const ids = (await asManager.get('/api/opportunities')).body.data.map((lead) => lead.id);
+    expect(ids).toEqual(expect.arrayContaining([hers.id, nobodys.id, omars.id]));
+  });
+
+  it('bulk assign moves the leads too', async () => {
+    const lead = await makeLead(asAgent);
+    const result = await asCeo
+      .post('/api/accounts/bulk/assign')
+      .send({ accountIds: [accountId], userIds: [String(otherAgent._id)] });
+    expect(result.body.data).toMatchObject({ assigned: 1, skipped: 0 });
+    const saved = await Opportunity.findById(lead.id).lean();
+    expect(String(saved.ownerId)).toBe(String(otherAgent._id));
+    expect((await asOther.get(`/api/opportunities/${lead.id}`)).status).toBe(200);
+  });
+});
