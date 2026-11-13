@@ -1,6 +1,7 @@
 import express from 'express';
 import helmet from 'helmet';
 import { env } from './config/env.js';
+import { GENERATOR_PDF_PATH } from './constants/generatedDocuments.js';
 import apiRoutes from './routes/index.js';
 import { passport } from './infra/googleAuth.js';
 import { requestLogger } from './middleware/requestId.js';
@@ -34,15 +35,18 @@ export function createApp({ sessionMiddleware } = {}) {
   app.use(helmet());
   // Refuses changing requests that another website makes a signed-in browser send.
   app.use(createCsrfProtection());
-  app.use(
-    express.json({
-      limit: '1mb',
-      // A provider's signature is calculated over the exact bytes it sent, so webhook requests
-      // keep them. Other requests do not need them.
-      verify: (req, res, buffer) => {
-        if (req.originalUrl.startsWith('/api/webhooks/')) req.rawBody = buffer;
-      },
-    }),
+  const jsonBody = express.json({
+    limit: '1mb',
+    // A provider's signature is calculated over the exact bytes it sent, so webhook requests
+    // keep them. Other requests do not need them.
+    verify: (req, res, buffer) => {
+      if (req.originalUrl.startsWith('/api/webhooks/')) req.rawBody = buffer;
+    },
+  });
+  // The PDF download of the Document generator sends a whole page (up to 8 MB); its route reads
+  // its own body. Every other request keeps the 1 MB limit.
+  app.use((req, res, next) =>
+    req.path === GENERATOR_PDF_PATH ? next() : jsonBody(req, res, next),
   );
   // Some providers (Plivo) send their webhooks as form fields.
   app.use('/api/webhooks', express.urlencoded({ extended: false, limit: '100kb' }));

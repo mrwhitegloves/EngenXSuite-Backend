@@ -14,6 +14,19 @@ export function errorHandler(error, req, res, next) {
   // Malformed JSON bodies arrive from express.json() as a SyntaxError with status 400.
   const isBadJson = error?.type === 'entity.parse.failed';
 
+  // A body over the size limit of express.json(): a plain 413, not an internal error.
+  if (error?.type === 'entity.too.large') {
+    req.log?.warn({ status: 413, limit: error.limit }, 'Request body too large');
+    res.status(413).json({
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'This is too large to send. Make it smaller and try again.',
+        requestId: req.id,
+      },
+    });
+    return;
+  }
+
   if (isAppError(error) || isBadJson) {
     const status = isBadJson ? 400 : error.status;
     req.log?.warn({ code: error.code, status }, error.message);
