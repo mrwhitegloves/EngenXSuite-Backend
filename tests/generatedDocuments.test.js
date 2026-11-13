@@ -218,3 +218,63 @@ describe('document generator: one-click PDF', () => {
     ).toBe(401);
   });
 });
+
+describe('document generator: proposal reference numbers', () => {
+  const year = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+  }).format(new Date());
+  const ref = (number) => `ENGENX-DMA-${year}-${number}`;
+  const nextRef = async (client) => (await client.get('/api/generator/proposals/next-ref')).body;
+
+  it("suggests the next free number of the year, starting at 101, over everyone's proposals", async () => {
+    const client = await signedInAs(agent);
+    expect((await nextRef(client)).data.refNo).toBe(ref(101));
+
+    expect(
+      (await client.post('/api/generator/proposals').send({ ...PROPOSAL, refNo: ref(101) })).status,
+    ).toBe(201);
+    // A colleague's proposal outside the agent's scope still counts; typed references do not.
+    await (
+      await signedInAs(otherAgent)
+    )
+      .post('/api/generator/proposals')
+      .send({ ...PROPOSAL, refNo: ref(105) });
+    await client.post('/api/generator/proposals').send({ ...PROPOSAL, refNo: 'MY-OWN-REF-999' });
+    expect((await nextRef(client)).data.refNo).toBe(ref(106));
+  });
+
+  it('refuses a number of the series that is already used, and answers the next free one', async () => {
+    const client = await signedInAs(agent);
+    const first = (
+      await client.post('/api/generator/proposals').send({ ...PROPOSAL, refNo: ref(101) })
+    ).body.data;
+
+    const twice = await client
+      .post('/api/generator/proposals')
+      .send({ ...PROPOSAL, refNo: ref(101).toLowerCase() });
+    expect(twice.status).toBe(409);
+    expect(twice.body.error.code).toBe('REF_TAKEN');
+    expect(twice.body.error.details.nextRefNo).toBe(ref(102));
+
+    const second = (
+      await client.post('/api/generator/proposals').send({ ...PROPOSAL, refNo: ref(102) })
+    ).body.data;
+    expect(
+      (await client.patch(`/api/generator/proposals/${second.id}`).send({ refNo: ref(101) }))
+        .status,
+    ).toBe(409);
+    // Saving a proposal with its own number again is fine.
+    expect(
+      (
+        await client
+          .patch(`/api/generator/proposals/${first.id}`)
+          .send({ refNo: ref(101), title: 'New' })
+      ).status,
+    ).toBe(200);
+  });
+
+  it('only people who may create proposals get a number', async () => {
+    expect((await request(app).get('/api/generator/proposals/next-ref')).status).toBe(401);
+  });
+});

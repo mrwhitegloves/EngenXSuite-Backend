@@ -18,7 +18,7 @@ import {
 } from '../validation/generatedDocuments.js';
 
 // /api/generator: the Document generator (founder, 2026-11-12).
-//   /proposals   feature "proposals"
+//   /proposals   feature "proposals" (/proposals/next-ref: the suggested reference number)
 //   /letterheads feature "documents"
 //   /invoices    feature "invoices"
 //   /assets/seal the company seal with the signature (signed-in users of the generator only)
@@ -40,6 +40,7 @@ function kindRouter(kind) {
     validate({ body: createGeneratedBody }),
     controller.create,
   );
+  router.get('/next-ref', authorize(feature, 'create'), controller.nextRef);
   router.get('/:id', authorize(feature, 'view'), validate({ params: idParams }), controller.get);
   router.patch(
     '/:id',

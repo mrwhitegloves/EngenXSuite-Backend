@@ -8,6 +8,7 @@ import {
   getGenerated,
   listGenerated,
   mayUseGenerator,
+  nextRefNo,
   updateGenerated,
 } from '../services/generatedDocuments.service.js';
 
@@ -21,6 +22,10 @@ export const generatedController = (kind) => ({
   async list(req, res) {
     const { items, pagination } = await listGenerated(req.user, kind, req.validated.query);
     sendList(res, items, pagination);
+  },
+  // GET /api/generator/<kind>s/next-ref: the reference number a new document gets suggested.
+  async nextRef(req, res) {
+    sendOk(res, { refNo: await nextRefNo(kind) });
   },
   // GET /api/generator/<kind>s/:id
   async get(req, res) {
