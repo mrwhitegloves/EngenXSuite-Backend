@@ -1,8 +1,19 @@
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import request from 'supertest';
 
 // The Document generator (/api/generator): saved proposals, letter heads and invoices, each kind
 // behind its own permission feature with the owner scope.
+
+// Chromium is not started in tests: the renderer is replaced by a fake that answers a tiny PDF.
+const rendered = [];
+let browserInstalled = true;
+vi.mock('../infra/pdfRenderer.js', () => ({
+  isPdfRendererAvailable: () => browserInstalled,
+  renderPdf: async (html) => {
+    rendered.push(html);
+    return Buffer.from('%PDF-1.7 fake');
+  },
+}));
 
 const { createApp } = await import('../app.js');
 const { createSessionMiddleware } = await import('../middleware/session.js');
@@ -152,5 +163,58 @@ describe('document generator: proposals', () => {
     expect(response.status).toBe(200);
     expect(response.headers['content-type']).toContain('image/png');
     expect(response.headers['cache-control']).toContain('private');
+  });
+});
+
+describe('document generator: one-click PDF', () => {
+  const PAGE = `<!doctype html><html><body>${'<p>Proposal</p>'.repeat(20)}</body></html>`;
+
+  it('turns the page into a PDF file named after the document', async () => {
+    rendered.length = 0;
+    browserInstalled = true;
+    const response = await (
+      await signedInAs(agent)
+    )
+      .post('/api/generator/pdf')
+      .send({ html: PAGE, fileName: 'ENGENX-001 - Assessment: Tata Steel Ltd.' });
+    expect(response.status).toBe(200);
+    expect(response.headers['content-type']).toContain('application/pdf');
+    expect(response.headers['content-disposition']).toContain(
+      'filename="ENGENX-001 - Assessment Tata Steel Ltd..pdf"',
+    );
+    expect(rendered).toEqual([PAGE]);
+  });
+
+  it('accepts a page larger than the usual 1 MB limit, refuses empty or huge ones', async () => {
+    const client = await signedInAs(agent);
+    const big = `<html><body>${'x'.repeat(2 * 1024 * 1024)}</body></html>`;
+    expect(
+      (await client.post('/api/generator/pdf').send({ html: big, fileName: 'Big' })).status,
+    ).toBe(200);
+    expect((await client.post('/api/generator/pdf').send({ html: '', fileName: 'x' })).status).toBe(
+      400,
+    );
+    const huge = 'x'.repeat(9 * 1024 * 1024);
+    expect([400, 413]).toContain(
+      (await client.post('/api/generator/pdf').send({ html: huge, fileName: 'x' })).status,
+    );
+    // Other requests keep the 1 MB limit.
+    const tooBig = { ...PROPOSAL, data: { text: 'x'.repeat(1.2 * 1024 * 1024) } };
+    expect((await client.post('/api/generator/proposals').send(tooBig)).status).toBe(413);
+  });
+
+  it('answers 503 without a browser, and refuses people who are not signed in', async () => {
+    browserInstalled = false;
+    const response = await (
+      await signedInAs(agent)
+    )
+      .post('/api/generator/pdf')
+      .send({ html: PAGE, fileName: 'x' });
+    expect(response.status).toBe(503);
+    expect(response.body.error.code).toBe('PDF_UNAVAILABLE');
+    browserInstalled = true;
+    expect(
+      (await request(app).post('/api/generator/pdf').send({ html: PAGE, fileName: 'x' })).status,
+    ).toBe(401);
   });
 });

@@ -14,3 +14,7 @@ export const GENERATED_KIND_KEYS = Object.keys(GENERATED_KINDS);
 // The filled-in values of one document, as JSON, at most this size. A long proposal is about
 // 20 KB; the limit keeps a mistake (a pasted picture) from filling the database.
 export const MAX_DOCUMENT_DATA_BYTES = 300 * 1024;
+
+// One-click PDF: the screen sends the finished page (styles and pictures inside it).
+export const GENERATOR_PDF_PATH = '/api/generator/pdf';
+export const MAX_PDF_HTML_BYTES = 8 * 1024 * 1024;

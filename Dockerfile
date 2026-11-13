@@ -7,6 +7,13 @@ FROM node:22-slim
 ENV NODE_ENV=production
 WORKDIR /app
 
+# Chromium and fonts for one-click PDF downloads of the Document generator
+# (infra/pdfRenderer.js). Inter is the app's font; Noto covers the rupee sign and other scripts.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends chromium fonts-inter fonts-noto-core \
+  && rm -rf /var/lib/apt/lists/*
+ENV CHROMIUM_PATH=/usr/bin/chromium
+
 # Dependencies first: this layer is rebuilt only when the package files change.
 # --omit=dev leaves out test and lint tools. --ignore-scripts runs no install scripts at all,
 # so nothing from a package executes during the build.

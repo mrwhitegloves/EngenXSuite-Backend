@@ -74,6 +74,11 @@ const envSchema = z.object({
   S3_PROD_BUCKET: z.string().min(1).optional(),
   S3_DEV_BUCKET: z.string().min(1).optional(),
 
+  // Chromium for one-click PDF downloads of the Document generator. Optional: without it the
+  // server looks in the usual places (/usr/bin/chromium in the image, Chrome or Edge locally);
+  // with no browser at all the screen falls back to the browser's own print dialog.
+  CHROMIUM_PATH: z.string().min(1).optional(),
+
   // Error tracking (Sentry). SENTRY_BACKEND is this server's DSN. SENTRY_CLIENT is the browser
   // app's DSN: it is public by design and is handed to the client through /api/public/config.
   SENTRY_BACKEND: z.url().optional(),

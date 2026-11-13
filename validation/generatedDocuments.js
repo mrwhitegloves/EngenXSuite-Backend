@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MAX_DOCUMENT_DATA_BYTES } from '../constants/generatedDocuments.js';
+import { MAX_DOCUMENT_DATA_BYTES, MAX_PDF_HTML_BYTES } from '../constants/generatedDocuments.js';
 import { pagination, sortBy } from './common.js';
 
 // Input rules of /api/generator/<kind> (Document generator).
@@ -40,4 +40,13 @@ export const listGeneratedQuery = z.object({
   search: z.string().trim().max(100).optional(),
   sort: sortBy(['title', 'createdAt', 'updatedAt']),
   ...pagination,
+});
+
+// One-click PDF: the finished page and the file name to give it.
+export const generatorPdfBody = z.strictObject({
+  html: z
+    .string()
+    .min(50, 'Nothing to print')
+    .refine((value) => Buffer.byteLength(value) <= MAX_PDF_HTML_BYTES, 'The document is too large'),
+  fileName: z.string().trim().min(1).max(150),
 });

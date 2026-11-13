@@ -1,6 +1,7 @@
 import { fileURLToPath } from 'node:url';
 import { sendCreated, sendList, sendOk } from '../lib/respond.js';
-import { forbidden } from '../lib/errors.js';
+import { createAppError, forbidden } from '../lib/errors.js';
+import { isPdfRendererAvailable, renderPdf } from '../infra/pdfRenderer.js';
 import {
   createGenerated,
   deleteGenerated,
@@ -52,4 +53,36 @@ export function getSeal(req, res, next) {
   if (!mayUseGenerator(req.user)) return next(forbidden());
   res.set('Cache-Control', 'private, max-age=3600');
   return res.sendFile(SEAL_FILE);
+}
+
+/** "Proposal – Tata Steel" → a file name safe in a download header. */
+const safeFileName = (name) =>
+  `${
+    name
+      .replace(/[\\/:*?"<>|]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim() || 'document'
+  }.pdf`;
+
+// POST /api/generator/pdf: the finished page as a PDF file (one click, no print dialog).
+// Only for people who may use the generator. Without a browser on the machine: 503, and the
+// screen uses the browser's own print dialog instead.
+export async function postPdf(req, res, next) {
+  if (!mayUseGenerator(req.user)) return next(forbidden());
+  if (!isPdfRendererAvailable()) {
+    return next(
+      createAppError('PDF_UNAVAILABLE', 503, 'PDF downloads are not set up on the server.'),
+    );
+  }
+  const { html, fileName } = req.validated.body;
+  const pdf = await renderPdf(html);
+  const name = safeFileName(fileName);
+  const ascii = name.replace(/[^\x20-\x7e]/g, '_');
+  res.set({
+    'Content-Type': 'application/pdf',
+    'Content-Length': String(pdf.length),
+    'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`,
+    'Cache-Control': 'private, no-store',
+  });
+  return res.send(pdf);
 }
