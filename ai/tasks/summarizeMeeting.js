@@ -4,7 +4,7 @@ import { runAiTask } from '../runTask.js';
 // The summary of a meeting, from the notes a person wrote (or a voice note turned into text).
 // It proposes tasks; none is created until a person accepts it.
 
-export const SUMMARIZE_MEETING_VERSION = 'summarizeMeeting/v1';
+export const SUMMARIZE_MEETING_VERSION = 'summarizeMeeting/v2';
 
 const lines = z.array(z.string().trim().min(1).max(400)).max(10);
 
@@ -32,7 +32,9 @@ export const meetingSummarySchema = z.object({
 });
 
 const SYSTEM = `You help a sales person of a company that sells industrial AI, digital transformation and engineering solutions to factories in India.
-You get JSON with one meeting with a customer: what the CRM knows about it ("meeting") and what the sales person wrote down or said afterwards ("notes"; it may be rough, short, or in Hindi or Hinglish).
+You get JSON with one meeting with a customer: what the CRM knows about it ("meeting") and "notes".
+"notes" is what the sales person wrote down or said afterwards (it may be rough, short, or in Hindi or Hinglish), or, when "isTranscript" is true, the transcript of the recorded online meeting, perhaps followed by the sales person's own notes.
+A transcript has one line per part of speech: "[hh:mm:ss] Speaker: words". The speaker named by a person's name is OUR sales person (the one who recorded). "Others in the meeting" is everyone else: mostly the customer, sometimes a colleague of ours. A machine made the transcript from audio: it has mistakes, cut words, and Hindi written in Roman letters. Understand it as a person would; never report a garbled word as a fact.
 Turn the notes into a clear record of the meeting.
 
 Rules:
@@ -49,15 +51,16 @@ Answer with one JSON object and nothing else:
 { "summary": "4 to 8 sentences", "clientProblems": [], "machinesDiscussed": [], "technicalRequirements": [], "budget": "", "decisionMakers": [], "competitors": [], "commitments": [], "nextSteps": [], "risks": [], "missingInformation": [], "proposedTasks": [ { "title": "…", "dueInDays": 3 } ] }`;
 
 /**
- * @param {{ meeting: object, notes: string, meetingId: unknown, userId: unknown }} input
+ * @param {{ meeting: object, notes: string, isTranscript?: boolean, meetingId: unknown,
+ *           userId: unknown }} input
  */
-export function summarizeMeeting({ meeting, notes, meetingId, userId }) {
+export function summarizeMeeting({ meeting, notes, isTranscript = false, meetingId, userId }) {
   return runAiTask({
     task: 'summarizeMeeting',
     promptVersion: SUMMARIZE_MEETING_VERSION,
     modelClass: 'balanced',
     system: SYSTEM,
-    user: JSON.stringify({ meeting, notes }),
+    user: JSON.stringify({ meeting, isTranscript, notes }),
     schema: meetingSummarySchema,
     inputRefs: [{ kind: 'meetings', id: meetingId }],
     userId,

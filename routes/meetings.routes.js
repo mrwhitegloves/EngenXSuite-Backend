@@ -1,7 +1,13 @@
 import { Router } from 'express';
 import {
+  postAnalysis,
   getFormOptions,
   getMeetingById,
+  getSegmentAudio,
+  getTranscript,
+  getTranscriptDownload,
+  patchSegment,
+  removeAnalysis,
   getMeetings,
   getRecord,
   patchMeeting,
@@ -29,6 +35,13 @@ import {
   transcribeBody,
   updateMeetingBody,
 } from '../validation/meetings.js';
+import {
+  analysisParams,
+  editSegmentBody,
+  externalAnalysisBody,
+  segmentParams,
+  summaryBody,
+} from '../validation/recorder.js';
 
 // Meetings (/api/meetings). authorize() answers "may this person use meetings at all"; which
 // meeting exactly is decided in the service (the organizer, the invited, the manager line, and
@@ -60,7 +73,42 @@ router.post(
 const byId = validate({ params: idParams });
 const aiLimiter = createAiLimiter();
 router.get('/:id/record', authorize(FEATURE, 'view'), byId, getRecord);
-router.post('/:id/summary', authorize(FEATURE, 'edit'), aiLimiter, byId, postSummary);
+router.post(
+  '/:id/summary',
+  authorize(FEATURE, 'edit'),
+  aiLimiter,
+  validate({ params: idParams, body: summaryBody }),
+  postSummary,
+);
+// Analyses made outside the CRM (pasted by a person), next to the AI's summary.
+router.post(
+  '/:id/analyses',
+  authorize(FEATURE, 'view'),
+  validate({ params: idParams, body: externalAnalysisBody }),
+  postAnalysis,
+);
+router.delete(
+  '/:id/analyses/:analysisId',
+  authorize(FEATURE, 'view'),
+  validate({ params: analysisParams }),
+  removeAnalysis,
+);
+
+// The transcript made by the meeting recorder (Chrome extension).
+router.get('/:id/transcript', authorize(FEATURE, 'view'), byId, getTranscript);
+router.get('/:id/transcript/download', authorize(FEATURE, 'view'), byId, getTranscriptDownload);
+router.patch(
+  '/:id/transcript/segments/:segmentId',
+  authorize(FEATURE, 'view'),
+  validate({ params: segmentParams, body: editSegmentBody }),
+  patchSegment,
+);
+router.get(
+  '/:id/transcript/segments/:segmentId/audio',
+  authorize(FEATURE, 'view'),
+  validate({ params: segmentParams }),
+  getSegmentAudio,
+);
 router.post(
   '/:id/summary/tasks',
   authorize(FEATURE, 'edit'),

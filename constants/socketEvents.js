@@ -30,6 +30,8 @@ export const SOCKET_EVENTS = {
   emailsChanged: 'emails.changed',
   // A meeting was planned, changed, closed, or taken over from Google Calendar.
   meetingsChanged: 'meetings.changed',
+  // A part of a meeting transcript was read, corrected, or a recording started or stopped.
+  meetingTranscriptsChanged: 'meeting-transcripts.changed',
   // A WhatsApp message came or went, its status moved, or a conversation was read or assigned.
   whatsappChanged: 'whatsapp.changed',
   // A bulk sending was made, started, stopped, or handled its next person.

@@ -22,6 +22,7 @@ export const NOTIFICATION_TYPES = {
   meeting_invite: 'A colleague invites me to a meeting',
   meeting_reminder: 'A meeting of mine starts soon',
   meeting_booked: 'A customer books a meeting on my booking page',
+  meeting_transcript_ready: 'The transcript of a meeting I recorded is ready',
   backup_deleted: 'Old database backups are deleted (for people who manage the settings)',
   ai_budget: 'The AI budget is nearly or fully used (for people who manage the settings)',
 };

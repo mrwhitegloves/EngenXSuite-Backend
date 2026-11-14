@@ -122,13 +122,23 @@ export function splitAudio(audio, format, pieceBytes = AI_AUDIO_PIECE_BYTES) {
 /**
  * Audio to text. A long recording is sent in pieces and the texts are joined.
  * @param {{ audio: Buffer, format: string, userId?: unknown, entityType?: string,
- *           entityId?: unknown }} request
+ *           entityId?: unknown, task?: string, countPerPerson?: boolean }} request
+ *        countPerPerson false: the run counts only against the monthly cap, not against the
+ *        person's daily number (a meeting recording sends hundreds of short pieces)
  * @returns {Promise<{ text: string, model: string, seconds: number, runId: string }>}
  */
-export async function runAiTranscription({ audio, format, userId, entityType, entityId }) {
-  const task = 'transcribeAudio';
+export async function runAiTranscription({
+  audio,
+  format,
+  userId,
+  entityType,
+  entityId,
+  task = 'transcribeAudio',
+  countPerPerson = true,
+}) {
   const base = { task, promptVersion: `${task}/v1`, userId, entityType, entityId };
-  await gate(userId, base);
+  const countedUserId = countPerPerson ? userId : undefined;
+  await gate(countedUserId, base);
   const { transcribeModel: model } = await getAiSettings();
   const pieces = splitAudio(audio, format);
   if (pieces.some((piece) => piece.length > AI_AUDIO_MAX_BYTES)) {
@@ -161,7 +171,7 @@ export async function runAiTranscription({ audio, format, userId, entityType, en
       costPaise,
       latencyMs: answer.latencyMs,
     });
-    await countUsage(task, costPaise, userId);
+    await countUsage(task, costPaise, countedUserId);
     runId = String(run._id);
     seconds += answer.seconds;
     texts.push(answer.text.trim());

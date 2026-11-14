@@ -9,10 +9,12 @@ import { scopeFilter } from '../lib/scopeFilter.js';
 import { Account } from '../models/account.model.js';
 import { Contact } from '../models/contact.model.js';
 import { MEETING_MODES, Meeting } from '../models/meeting.model.js';
+import { MeetingExternalAnalysis } from '../models/meetingExternalAnalysis.model.js';
 import { MeetingSummary } from '../models/meetingSummary.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
 import { User } from '../models/user.model.js';
 import { loadAccountForAction } from './accounts.service.js';
+import { deleteMeetingTranscripts } from './meetingTranscripts.service.js';
 import { recordActivity } from './activities.service.js';
 import {
   getCompanyMailbox,
@@ -368,10 +370,17 @@ export async function createMeeting(actor, data, context = {}) {
     agenda: data.agenda,
     guestOptions: data.guestOptions,
     ...links,
+    // The meeting recorder gives the Meet call that is going on (context.meetLink).
+    ...(context.meetLink ? { meetLink: context.meetLink } : {}),
     organizerId: actor._id,
     createdBy: actor._id,
   });
-  const meeting = await pushToGoogle(saved.toObject(), 'save', data.tellGuests ?? true);
+  // A call the recorder found is going on already: it is not put into Google Calendar, and
+  // nobody gets an invitation for it.
+  const meeting =
+    context.bookedVia === 'recorder'
+      ? saved.toObject()
+      : await pushToGoogle(saved.toObject(), 'save', data.tellGuests ?? true);
 
   await onTimeline(meeting, actor._id, 'meeting_planned', `Meeting planned: ${meeting.title}`, {
     content: `${timeOf(meeting.startAt)}${meeting.location ? `, ${meeting.location}` : ''}`,
@@ -511,6 +520,8 @@ export async function deleteMeeting(actor, meetingId, options = {}, context = {}
   }
   await Meeting.deleteOne({ _id: meeting._id });
   await MeetingSummary.deleteOne({ meetingId: meeting._id });
+  await MeetingExternalAnalysis.deleteMany({ meetingId: meeting._id });
+  await deleteMeetingTranscripts(meeting._id);
   await onTimeline(meeting, actor._id, 'meeting_deleted', `Meeting deleted: ${meeting.title}`, {
     content: `It was planned for ${timeOf(meeting.startAt)}.`,
   });

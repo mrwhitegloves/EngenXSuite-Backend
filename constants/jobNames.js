@@ -24,4 +24,7 @@ export const JOB_NAMES = {
   calendarSyncAll: 'calendar.sync-all',
   meetingReminders: 'meetings.reminders',
   whatsappMedia: 'whatsapp.media',
+  transcriptSegment: 'meeting-transcripts.segment',
+  transcriptSweep: 'meeting-transcripts.sweep',
+  transcriptAudioCleanup: 'meeting-transcripts.audio-cleanup',
 };
