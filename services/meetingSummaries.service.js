@@ -10,11 +10,15 @@ import {
   toReadableUrl,
   uploadObject,
 } from '../infra/storage.js';
-import { badRequest, conflict, createAppError, notFound } from '../lib/errors.js';
+import { badRequest, conflict, createAppError, forbidden, notFound } from '../lib/errors.js';
 import { Account } from '../models/account.model.js';
+import { writeAudit } from '../lib/audit.js';
 import { Meeting } from '../models/meeting.model.js';
+import { MeetingExternalAnalysis } from '../models/meetingExternalAnalysis.model.js';
 import { MeetingSummary } from '../models/meetingSummary.model.js';
+import { User } from '../models/user.model.js';
 import { Opportunity } from '../models/opportunity.model.js';
+import { transcriptAsText } from './meetingTranscripts.service.js';
 import { loadMeetingForAction } from './meetings.service.js';
 import { createTask } from './tasks.service.js';
 
@@ -30,6 +34,8 @@ const MB = 1024 * 1024;
 export const MAX_MEETING_FILE_BYTES = 25 * MB;
 const MAX_FILES = 20;
 const MIN_NOTES = 20;
+// The longest transcript the AI reads: about two hours of talk. A longer one is cut at the end.
+const MAX_TRANSCRIPT_CHARACTERS = 120_000;
 const AUDIO_FORMATS = { mp3: 'mp3', mpeg: 'mp3', wav: 'wav', m4a: 'm4a', mp4: 'm4a', ogg: 'ogg' };
 
 const extensionOf = (name) => String(name).toLowerCase().split('.').pop();
@@ -129,6 +135,7 @@ function toView(summary, canEdit) {
     nextSteps: summary.nextSteps,
     risks: summary.risks,
     missingInformation: summary.missingInformation,
+    sourceType: summary.sourceType,
     proposedTasks: summary.proposedTasks.map((task, index) => ({
       index,
       title: task.title,
@@ -149,21 +156,44 @@ export async function getMeetingRecord(actor, meetingId) {
   await loadMeetingForAction(actor, meetingId, 'edit').catch(() => {
     canEdit = false;
   });
-  return { summary: toView(summary, canEdit), files: await meetingFileViews(meeting.files) };
+  return {
+    summary: toView(summary, canEdit),
+    files: await meetingFileViews(meeting.files),
+    externalAnalyses: await externalAnalysisViews(actor, meeting._id, canEdit),
+  };
 }
 
-/**
- * Let the AI summarize a meeting from its notes. Making it again replaces the earlier summary;
- * tasks that were accepted already stay.
- */
-export async function summarizeMeetingNow(actor, meetingId) {
-  const meeting = await loadMeetingForAction(actor, meetingId, 'edit');
+/** What the AI reads: the recorder's transcript (and the notes, when there are some) or the notes. */
+async function summaryInput(meeting, source) {
   const notes = (meeting.notes ?? '').trim();
+  if (source === 'transcript') {
+    const transcript = (await transcriptAsText(meeting._id)).slice(0, MAX_TRANSCRIPT_CHARACTERS);
+    if (transcript.length < MIN_NOTES) {
+      throw badRequest('This meeting has no transcript yet. Record it with the meeting recorder.');
+    }
+    return {
+      text: notes ? `TRANSCRIPT\n${transcript}\n\nNOTES OF OUR SALES PERSON\n${notes}` : transcript,
+      sourceType: 'transcript',
+    };
+  }
   if (notes.length < MIN_NOTES) {
     throw badRequest(
       'Write the notes of the meeting first (or add a voice note and turn it into text).',
     );
   }
+  return { text: notes, sourceType: notes.includes('[Voice note:') ? 'voice_note' : 'notes' };
+}
+
+/**
+ * Let the AI summarize a meeting from its transcript or its notes. Making it again replaces
+ * the earlier summary; tasks that were accepted already stay.
+ * @param {{ source?: 'transcript' | 'notes' }} [options]  Validated. Default: the transcript
+ *        when the meeting has one, otherwise the notes
+ */
+export async function summarizeMeetingNow(actor, meetingId, options = {}) {
+  const meeting = await loadMeetingForAction(actor, meetingId, 'edit');
+  const source = options.source ?? ((await transcriptAsText(meeting._id)) ? 'transcript' : 'notes');
+  const { text: notes, sourceType } = await summaryInput(meeting, source);
   const [account, lead] = await Promise.all([
     meeting.accountId ? Account.findById(meeting.accountId).select('name industry').lean() : null,
     meeting.opportunityId
@@ -182,6 +212,7 @@ export async function summarizeMeetingNow(actor, meetingId) {
       customerPeople: meeting.attendees.map((person) => person.name ?? person.email),
     },
     notes,
+    isTranscript: sourceType === 'transcript',
     meetingId: meeting._id,
     userId: actor._id,
   });
@@ -194,7 +225,7 @@ export async function summarizeMeetingNow(actor, meetingId) {
     {
       $set: {
         ...lists,
-        sourceType: notes.includes('[Voice note:') ? 'voice_note' : 'notes',
+        sourceType,
         proposedTasks: [
           ...kept,
           ...proposedTasks
@@ -266,4 +297,79 @@ export async function decideProposedTask(actor, meetingId, { index, decision }, 
     await MeetingSummary.updateOne({ _id: summary._id }, { $set: { [status]: 'pending' } });
     throw error;
   }
+}
+
+// ── Analyses made outside the CRM ──────────────────────────────────────────────────────────
+// A person pastes an analysis made elsewhere (ChatGPT, a colleague's write-up) next to the
+// CRM's own AI summary. Seen by who may see the meeting; added by who may see it; removed by
+// the person who added it or who may change the meeting.
+
+async function externalAnalysisViews(actor, meetingId, canEditMeeting) {
+  const rows = await MeetingExternalAnalysis.find({ meetingId }).sort({ createdAt: -1 }).lean();
+  const names = new Map(
+    (
+      await User.find({ _id: { $in: rows.map((row) => row.addedBy) } })
+        .select('name')
+        .lean()
+    ).map((user) => [String(user._id), user.name]),
+  );
+  return rows.map((row) => ({
+    id: String(row._id),
+    label: row.label,
+    text: row.text,
+    addedBy: { id: String(row.addedBy), name: names.get(String(row.addedBy)) ?? 'Someone' },
+    addedAt: row.createdAt,
+    canDelete: canEditMeeting || String(row.addedBy) === String(actor._id),
+  }));
+}
+
+/**
+ * Paste an analysis of the meeting made elsewhere.
+ * @param {{ label: string, text: string }} data  Validated
+ */
+export async function addExternalAnalysis(actor, meetingId, data, context = {}) {
+  const meeting = await loadMeetingForAction(actor, meetingId, 'view');
+  const saved = await MeetingExternalAnalysis.create({
+    meetingId: meeting._id,
+    label: data.label,
+    text: data.text,
+    addedBy: actor._id,
+  });
+  await writeAudit({
+    actor,
+    action: 'meeting.external_analysis_added',
+    entityType: 'meetings',
+    entityId: meeting._id,
+    newValue: { analysisId: String(saved._id), label: data.label },
+    requestId: context.requestId,
+  });
+  announce();
+  return { id: String(saved._id) };
+}
+
+export async function deleteExternalAnalysis(actor, meetingId, analysisId, context = {}) {
+  const meeting = await loadMeetingForAction(actor, meetingId, 'view');
+  const row = await MeetingExternalAnalysis.findOne({
+    _id: analysisId,
+    meetingId: meeting._id,
+  }).lean();
+  if (!row) throw notFound('Analysis not found');
+  let canEditMeeting = true;
+  await loadMeetingForAction(actor, meetingId, 'edit').catch(() => {
+    canEditMeeting = false;
+  });
+  if (!canEditMeeting && String(row.addedBy) !== String(actor._id)) {
+    throw forbidden('Only the person who added it, or who may change the meeting, can remove it.');
+  }
+  await MeetingExternalAnalysis.deleteOne({ _id: row._id });
+  await writeAudit({
+    actor,
+    action: 'meeting.external_analysis_removed',
+    entityType: 'meetings',
+    entityId: meeting._id,
+    oldValue: { analysisId: String(row._id), label: row.label },
+    requestId: context.requestId,
+  });
+  announce();
+  return { deleted: true };
 }

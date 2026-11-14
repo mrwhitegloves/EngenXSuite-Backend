@@ -16,6 +16,7 @@ import { createAppError } from '../lib/errors.js';
 // This comes on top of the SameSite=Lax session cookie (middleware/session.js).
 
 const SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+const RECORDER_PATH = '/api/recorder/';
 
 function originOf(url) {
   try {
@@ -41,6 +42,13 @@ export function createCsrfProtection({ allowedOrigins = [env.APP_URL] } = {}) {
     if (site === 'same-origin' || site === 'none') return next();
     // Not a browser page at all.
     if (!site && !origin) return next();
+    // The meeting recorder (our Chrome extension) signs in with its own token in a header and
+    // never with the cookie (middleware/requireRecorder.js), so there is no cookie to abuse.
+    // Another site cannot send this header without a CORS approval, which this API never gives.
+    // Pairing uses no cookie either: only the one-time code typed into the extension.
+    const isRecorderCall =
+      req.path === `${RECORDER_PATH}pair` || /^Bearer /.test(req.get('authorization') ?? '');
+    if (req.path.startsWith(RECORDER_PATH) && isRecorderCall) return next();
 
     // Otherwise the page's address must be our client, or the address this API is reached at.
     // ("same-site" is not enough: another site on a sister sub-domain is still another site.)

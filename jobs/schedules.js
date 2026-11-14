@@ -116,6 +116,24 @@ const SCHEDULES = [
     jobName: JOB_NAMES.taskReminders,
     isEnabled: () => true,
   },
+  {
+    // Every 2 minutes: finish meeting recordings that went quiet, read waiting pieces again.
+    id: 'meeting-transcripts-sweep',
+    queue: 'integrations',
+    cron: '*/2 * * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.transcriptSweep,
+    isEnabled: () => isStorageConfigured(),
+  },
+  {
+    // Every night at 03:30 India time: remove meeting audio older than 60 days (text stays).
+    id: 'meeting-transcripts-audio-cleanup',
+    queue: 'integrations',
+    cron: '30 3 * * *',
+    timezone: 'Asia/Kolkata',
+    jobName: JOB_NAMES.transcriptAudioCleanup,
+    isEnabled: () => isStorageConfigured(),
+  },
 ];
 
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

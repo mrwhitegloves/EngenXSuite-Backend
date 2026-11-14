@@ -10,7 +10,8 @@ const { ObjectId } = mongoose.Schema.Types;
 export const MEETING_MODES = ['online', 'physical', 'plant_visit'];
 export const MEETING_STATUSES = ['scheduled', 'completed', 'cancelled', 'no_show'];
 // crm: planned here. google: found in the organizer's Google Calendar (with a CRM contact).
-export const MEETING_SOURCES = ['crm', 'booking_page', 'google'];
+// recorder: made by the meeting recorder (Chrome extension) for a Meet call going on already.
+export const MEETING_SOURCES = ['crm', 'booking_page', 'google', 'recorder'];
 // What a guest answered to the invitation (Google's words).
 export const GUEST_RESPONSES = ['needsAction', 'accepted', 'declined', 'tentative'];
 

@@ -15,6 +15,11 @@ import {
   runMeetingRemindersJob,
 } from './meetings.jobs.js';
 import { runCallSettleJob, runCallSettleSweepJob } from './calls.jobs.js';
+import {
+  runTranscriptAudioCleanupJob,
+  runTranscriptSegmentJob,
+  runTranscriptSweepJob,
+} from './meetingTranscripts.jobs.js';
 import { runPing } from './system.jobs.js';
 import { runTaskRemindersJob } from './tasks.jobs.js';
 import { runWebhookEvent, runWebhookSweep } from './webhooks.jobs.js';
@@ -52,4 +57,7 @@ export const JOB_HANDLERS = {
   [JOB_NAMES.calendarSyncAll]: runCalendarSyncAllJob,
   [JOB_NAMES.meetingReminders]: runMeetingRemindersJob,
   [JOB_NAMES.whatsappMedia]: runWhatsAppMediaJob,
+  [JOB_NAMES.transcriptSegment]: runTranscriptSegmentJob,
+  [JOB_NAMES.transcriptSweep]: runTranscriptSweepJob,
+  [JOB_NAMES.transcriptAudioCleanup]: runTranscriptAudioCleanupJob,
 };
