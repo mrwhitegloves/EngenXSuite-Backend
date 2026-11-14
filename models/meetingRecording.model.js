@@ -20,7 +20,7 @@ const meetingRecordingSchema = new mongoose.Schema(
     // The Google Meet code (abc-defg-hij).
     meetCode: { type: String, maxlength: 20 },
     status: { type: String, enum: RECORDING_STATUSES, required: true, default: 'recording' },
-    // The person confirmed that everyone in the meeting was told it is recorded.
+    // When the person confirmed, on purpose, that this meeting is to be recorded.
     consentConfirmedAt: { type: Date, required: true },
     startedAt: { type: Date, required: true },
     lastSegmentAt: { type: Date },

@@ -27,9 +27,10 @@ export const startRecordingBody = z
     accountId: objectId.optional(),
     opportunityId: objectId.optional(),
     title: z.string().trim().max(200).optional(),
-    // The person confirms that everyone in the meeting was told it is recorded.
+    // The person confirms, on purpose, that this meeting is to be recorded (founder
+    // 2026-11-14: the other people in the call are not told by the recorder).
     consent: z.literal(true, {
-      message: 'Confirm that everyone was told the meeting is recorded',
+      message: 'Tick the box to record this meeting',
     }),
   })
   .refine((body) => body.meetingId || body.accountId || body.opportunityId, {
